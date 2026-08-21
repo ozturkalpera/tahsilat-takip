@@ -23,47 +23,68 @@ def bakiye_formatla(deger):
     except:
         return str(deger)
 
+# --- GÜVENLİ VERİ YÜKLEME ---
 def verileri_yukle():
     if os.path.exists(TAKIP_DOSYASI):
-        with open(TAKIP_DOSYASI, 'r', encoding='utf-8') as f: return json.load(f)
+        try:
+            with open(TAKIP_DOSYASI, 'r', encoding='utf-8') as f: 
+                veri = json.load(f)
+                return veri if isinstance(veri, dict) else {}
+        except: return {}
     return {}
 
 def ana_liste_yukle():
     if os.path.exists(ANA_LISTE_DOSYASI):
-        with open(ANA_LISTE_DOSYASI, 'r', encoding='utf-8') as f: return json.load(f)
+        try:
+            with open(ANA_LISTE_DOSYASI, 'r', encoding='utf-8') as f: 
+                veri = json.load(f)
+                return veri if isinstance(veri, list) else []
+        except: return []
     return []
 
 def verileri_kaydet():
-    with open(TAKIP_DOSYASI, 'w', encoding='utf-8') as f:
-        json.dump(st.session_state.takip, f, ensure_ascii=False, indent=4)
+    # Sadece dict (sözlük) ise kaydet
+    if isinstance(st.session_state.takip, dict):
+        with open(TAKIP_DOSYASI, 'w', encoding='utf-8') as f:
+            json.dump(st.session_state.takip, f, ensure_ascii=False, indent=4)
 
 def ana_liste_kaydet():
-    with open(ANA_LISTE_DOSYASI, 'w', encoding='utf-8') as f:
-        json.dump(st.session_state.ana_liste, f, ensure_ascii=False, indent=4)
+    if isinstance(st.session_state.ana_liste, list):
+        with open(ANA_LISTE_DOSYASI, 'w', encoding='utf-8') as f:
+            json.dump(st.session_state.ana_liste, f, ensure_ascii=False, indent=4)
 
-if 'takip' not in st.session_state: st.session_state.takip = verileri_yukle()
-if 'ana_liste' not in st.session_state: st.session_state.ana_liste = ana_liste_yukle()
+# Hafıza başlatma (Bozulmuşsa sıfırla)
+if 'takip' not in st.session_state or not isinstance(st.session_state.takip, dict): 
+    st.session_state.takip = verileri_yukle()
+if 'ana_liste' not in st.session_state or not isinstance(st.session_state.ana_liste, list): 
+    st.session_state.ana_liste = ana_liste_yukle()
 
 # --- YAN MENÜ (SİSTEM VE YEDEKLEME) ---
 with st.sidebar:
     st.header("⚙️ Sistem İşlemleri")
     st.info("Bulut sisteminde verilerinizin kaybolmaması için gün sonunda yedeğinizi indirin.")
     
-    # JSON İndirme
     if st.session_state.takip:
         json_data = json.dumps(st.session_state.takip, ensure_ascii=False, indent=4)
         st.download_button(label="📥 Takip Verilerini Yedekle", data=json_data, file_name="takip_yedek.json", mime="application/json")
     
-    # JSON Yükleme
     st.markdown("---")
     st.markdown("**Yedekten Geri Yükle**")
     yedek_dosya = st.file_uploader("Yedek JSON Dosyasını Seçin", type=["json"])
     if yedek_dosya is not None:
         if st.button("🔄 Yedeği Yükle"):
-            st.session_state.takip = json.load(yedek_dosya)
-            verileri_kaydet()
-            st.success("Yedek başarıyla yüklendi!")
-            st.rerun()
+            try:
+                yuklenen_veri = json.load(yedek_dosya)
+                # Yüklenen verinin gerçekten Takip formatında (sözlük) olup olmadığını kontrol et
+                if isinstance(yuklenen_veri, dict):
+                    st.session_state.takip = yuklenen_veri
+                    verileri_kaydet()
+                    st.success("Yedek başarıyla yüklendi!")
+                    st.rerun()
+                else:
+                    st.error("Hata: Yüklediğiniz dosya geçerli bir Takip yedeği değil! (Yanlış dosya seçmiş olabilirsiniz)")
+            except Exception as e:
+                st.error("Dosya okunurken bir hata oluştu.")
 
 st.title("📈 Netsis Tahsilat ve Cari Takip Sistemi")
 
@@ -151,7 +172,7 @@ with tab1:
 
 # --- 2. SEKME ---
 with tab2:
-    if st.session_state.takip:
+    if st.session_state.takip and isinstance(st.session_state.takip, dict):
         takip_listesi = []
         toplam_bakiye = 0.0
         odenen_bakiye = 0.0
@@ -198,7 +219,7 @@ with tab2:
         if secili_durum != "Tümü": df_takip = df_takip[df_takip["Durum"] == secili_durum]
         if secili_ozel != "Tümü": df_takip = df_takip[df_takip["Özel Durum"] == secili_ozel]
         
-        st.info("✏️ **Durum, Özel Durum, Tarih ve Not** hücrelerine çift tıklayarak doğrudan tablo üzerinden düzenleme yapabilirsiniz. Değişiklikler otomatik kaydedilir.")
+        st.info("✏️ **Durum, Özel Durum, Tarih ve Not** hücrelerine çift tıklayarak doğrudan tablo üzerinden düzenleme yapabilirsiniz.")
         
         edited_takip = st.data_editor(
             df_takip,
@@ -221,7 +242,7 @@ with tab2:
         degisiklik_var = False
         for index, row in edited_takip.iterrows():
             kod = row["Cari Kod"]
-            eski = st.session_state.takip[kod]
+            eski = st.session_state.takip.get(kod, {})
             if (eski.get("Durum", "Beklemede") != row["Durum"] or 
                 eski.get("Özel Durum", "") != row["Özel Durum"] or 
                 eski.get("Tarih", "") != row["Tarih"] or 
@@ -247,7 +268,8 @@ with tab2:
                             "Telefon": row["Telefon"], "Bakiye": row["Bakiye"],
                             "_Bakiye_Num": bakiye_temizle(row["Bakiye"])
                         })
-                    del st.session_state.takip[kod]
+                    if kod in st.session_state.takip:
+                        del st.session_state.takip[kod]
                 verileri_kaydet()
                 ana_liste_kaydet()
                 st.success("Seçilen cariler takipten çıkarıldı.")
