@@ -32,7 +32,6 @@ def tarih_cozumle(tarih_str):
         try: return pd.to_datetime(tarih_str).date()
         except: return None
 
-# --- GÜVENLİ VERİ YÜKLEME ---
 def verileri_yukle():
     if os.path.exists(TAKIP_DOSYASI):
         try:
@@ -66,7 +65,6 @@ if 'takip' not in st.session_state or not isinstance(st.session_state.takip, dic
 if 'ana_liste' not in st.session_state or not isinstance(st.session_state.ana_liste, list): 
     st.session_state.ana_liste = ana_liste_yukle()
 
-# --- YAN MENÜ ---
 with st.sidebar:
     st.header("⚙️ Sistem İşlemleri")
     st.info("Bulut sisteminde verilerinizin kaybolmaması için gün sonunda yedeğinizi indirin.")
@@ -239,9 +237,9 @@ with tab2:
                 "Telefon": veri.get("Telefon", ""),
                 "Bakiye": veri.get("Bakiye", ""),
                 "Durum": durum,
-                "Özel Durum": veri.get("Özel Durum", ""),
+                "Özel Durum": str(veri.get("Özel Durum", "")), # Güvence altına alındı
                 "Tarih": tarih_cozumle(veri.get("Tarih", "")),
-                "Not": veri.get("Not", "")
+                "Not": str(veri.get("Not", ""))
             })
             
         df_takip = pd.DataFrame(takip_listesi)
@@ -258,11 +256,13 @@ with tab2:
         durumlar = ["Tümü", "Beklemede", "Arandı", "Ödedi", "Dönmedi"]
         secili_durum = col_f1.selectbox("Durum Filtresi", durumlar)
         
-        ozel_durumlar = ["Tümü"] + sorted(list(set(df_takip["Özel Durum"][df_takip["Özel Durum"] != ""])))
+        # --- HATA DÜZELTİLDİ: Null ve Boşluklar güvenle temizleniyor ---
+        temiz_ozeller = [str(x) for x in df_takip["Özel Durum"].unique() if pd.notna(x) and str(x).strip() != ""]
+        ozel_durumlar = ["Tümü"] + sorted(temiz_ozeller)
         secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ozel_durumlar)
         
         if secili_durum != "Tümü": df_takip = df_takip[df_takip["Durum"] == secili_durum]
-        if secili_ozel != "Tümü": df_takip = df_takip[df_takip["Özel Durum"] == secili_ozel]
+        if secili_ozel != "Tümü": df_takip = df_takip[df_takip["Özel Durum"].fillna("").astype(str) == secili_ozel]
         
         st.info("✏️ **Durum, Özel Durum, Tarih ve Not** hücrelerine çift tıklayıp değiştirdikten sonra **Tab (Sekme) veya Enter tuşuna basmanız** kaydetmek için yeterlidir.")
         
@@ -284,7 +284,6 @@ with tab2:
             df_takip.drop(columns=["Seç"]).to_excel(writer, index=False, sheet_name='Tahsilat_Listesi')
         st.download_button(label="📄 Güncel Listeyi Excel Olarak İndir", data=output.getvalue(), file_name="Tahsilat_Takip_Raporu.xlsx", mime="application/vnd.ms-excel")
         
-        # --- TAB VE ENTER'A BASILDIĞINDA OTOMATİK KAYIT İŞLEMİ ---
         degisiklik_var = False
         for index, row in edited_takip.iterrows():
             kod = row["Cari Kod"]
@@ -304,15 +303,13 @@ with tab2:
                 eski.get("Not", "") != row["Not"]):
                 
                 st.session_state.takip[kod]["Durum"] = row["Durum"]
-                st.session_state.takip[kod]["Özel Durum"] = row["Özel Durum"]
+                st.session_state.takip[kod]["Özel Durum"] = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
                 st.session_state.takip[kod]["Tarih"] = yeni_tarih_str
-                st.session_state.takip[kod]["Not"] = row["Not"]
+                st.session_state.takip[kod]["Not"] = str(row["Not"]) if pd.notna(row["Not"]) else ""
                 degisiklik_var = True
                 
-        # EĞER BİR HÜCRE DEĞİŞTİRİLİP TAB'A VEYA ENTER'A BASILDIYSA:
         if degisiklik_var: 
             verileri_kaydet()
-            # YENİ EKLENEN GÖRSEL BİLDİRİM
             st.toast("✅ Değişiklikler otomatik olarak kaydedildi!", icon="💾")
             
         silinecekler = edited_takip[edited_takip["Seç"] == True]
