@@ -83,7 +83,9 @@ def whatsapp_link_olustur(telefon, isim, bakiye):
     
     mesaj = f"Merhaba {isim}, sistemimizde {bakiye:,.2f} TL tutarında bakiyeniz bulunmaktadır. İyi çalışmalar dileriz."
     mesaj_kodlu = urllib.parse.quote(mesaj)
-    return f"https://web.whatsapp.com/send?phone={temiz_tel}&text={mesaj_kodlu}"
+    
+    # DÜZELTME: Doğrudan WhatsApp Uygulamasına Yönlendiren Link (wa.me)
+    return f"https://wa.me/{temiz_tel}?text={mesaj_kodlu}"
 
 # ==========================================
 # ANA UYGULAMA ARAYÜZÜ
@@ -208,7 +210,7 @@ with tab1:
                 c.close()
                 conn.close()
                 st.success("Seçilen cariler takibe aktarıldı!")
-                time.sleep(1)
+                time.sleep(1) 
                 st.rerun()
             except Exception as e:
                 st.error(f"Aktarım sırasında bir hata oluştu: {e}")
@@ -282,7 +284,6 @@ with tab2:
         
         st.info("💡 **Görüşme Geçmişini Görmek İçin:** Bir carinin yanındaki kutucuğu işaretlediğinizde detay paneli hemen aşağıda açılır.")
         
-        # TABLO BÖLÜMÜ
         edited_takip = st.data_editor(
             df_gosterim,
             hide_index=True,
@@ -298,10 +299,8 @@ with tab2:
             height=350
         )
         
-        # Tablodan seçilen satırları yakala
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
         
-        # Hücre güncellemelerini buluta kaydet (Durum, Özel durum vb.)
         degisiklik_yapildi = False
         c = conn.cursor()
         for index, row in edited_takip.iterrows():
@@ -321,7 +320,6 @@ with tab2:
             time.sleep(1)
             st.rerun()
 
-        # Toplu Çıkarma İşlemi
         if st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar"):
             if not secili_satirlar.empty:
                 try:
@@ -352,24 +350,19 @@ with tab2:
         st.markdown("---")
         st.markdown("### 📝 Cari Detay ve Görüşme Geçmişi")
         
-        # --- YENİ AKILLI LOG SEÇİM SİSTEMİ ---
         aktif_cari_kod = None
         
-        # 1. Eğer tablodan sadece 1 kişi seçildiyse doğrudan onun kodunu al
         if len(secili_satirlar) == 1:
             aktif_cari_kod = str(secili_satirlar.iloc[0]["Cari Kod"])
             st.success(f"👆 Tablodan **{secili_satirlar.iloc[0]['Cari İsim']}** seçildi. İşlem yapabilirsiniz.")
-        # 2. Eğer birden fazla seçildiyse uyarı ver
         elif len(secili_satirlar) > 1:
             st.warning("⚠️ Görüşme detaylarını görmek ve not eklemek için tablodan sadece **BİR** kişinin kutucuğunu işaretleyin.")
-        # 3. Hiçbiri seçilmediyse manuel arama çubuğunu göster
         else:
             cari_liste = ["-- Lütfen tablodan bir cari işaretleyin veya buradan ismini arayın --"] + df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
             secilen_cari_str = st.selectbox("Manuel Arama (İsteğe Bağlı):", cari_liste)
             if secilen_cari_str != "-- Lütfen tablodan bir cari işaretleyin veya buradan ismini arayın --":
                 aktif_cari_kod = secilen_cari_str.split("(")[-1].replace(")", "")
         
-        # Aktif cari kodu belirlendiyse detay panelini aç
         if aktif_cari_kod:
             cari_detay = df_takip[df_takip['kod'] == aktif_cari_kod].iloc[0]
             log_col1, log_col2 = st.columns([1, 2])
