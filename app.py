@@ -1,51 +1,83 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
+import psycopg2
 import os
 import io
 import time
-import urllib.parse  # YENİ: WhatsApp mesajını linke çevirmek için
+import urllib.parse
 from datetime import datetime
 import plotly.express as px
 
 st.set_page_config(page_title="Tahsilat ve Cari Takip", page_icon="📈", layout="wide")
 
-DB_FILE = "tahsilat.db"
+# ==========================================
+# 1. ŞİFRELİ GİRİŞ SİSTEMİ (LOGIN)
+# ==========================================
+def check_password():
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+
+    def password_entered():
+        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"] # Güvenlik için şifreyi hafızadan sil
+        else:
+            st.session_state["password_correct"] = False
+
+    if not st.session_state["password_correct"]:
+        st.markdown("<h2 style='text-align: center;'>🔒 Sistem Girişi</h2>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.info("Bu uygulamaya erişmek için yetkili şifresi gereklidir.")
+            st.text_input("Lütfen Şifrenizi Girin:", type="password", on_change=password_entered, key="password")
+            if "password_correct" in st.session_state and st.session_state["password_correct"] == False:
+                st.error("❌ Hatalı şifre! Lütfen tekrar deneyin.")
+        return False
+    return True
+
+# Şifre doğru değilse aşağıya geçme ve programı burada durdur
+if not check_password():
+    st.stop()
 
 # ==========================================
-# VERİTABANI (SQLite) İŞLEMLERİ
+# 2. BULUT VERİTABANI (POSTGRESQL) İŞLEMLERİ
 # ==========================================
+@st.cache_resource
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS takip (
-                    kod TEXT PRIMARY KEY, 
-                    isim TEXT, 
-                    telefon TEXT, 
-                    bakiye REAL, 
-                    durum TEXT, 
-                    ozel_durum TEXT, 
-                    tarih TEXT
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS loglar (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                    cari_kod TEXT, 
-                    tarih_saat TEXT, 
-                    not_metni TEXT
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS ana_liste (
-                    kod TEXT PRIMARY KEY, 
-                    isim TEXT, 
-                    telefon TEXT, 
-                    bakiye REAL
-                )''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = psycopg2.connect(st.secrets["DB_URL"])
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS takip (
+                        kod TEXT PRIMARY KEY, 
+                        isim TEXT, 
+                        telefon TEXT, 
+                        bakiye NUMERIC, 
+                        durum TEXT, 
+                        ozel_durum TEXT, 
+                        tarih TEXT
+                    )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS loglar (
+                        id SERIAL PRIMARY KEY, 
+                        cari_kod TEXT, 
+                        tarih_saat TEXT, 
+                        not_metni TEXT
+                    )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS ana_liste (
+                        kod TEXT PRIMARY KEY, 
+                        isim TEXT, 
+                        telefon TEXT, 
+                        bakiye NUMERIC
+                    )''')
+        conn.commit()
+        c.close()
+        conn.close()
+    except Exception as e:
+        st.error(f"Veritabanı bağlantı hatası. Lütfen Secrets ayarlarını kontrol edin. Detay: {e}")
 
 init_db()
 
 def get_db_connection():
-    return sqlite3.connect(DB_FILE)
+    return psycopg2.connect(st.secrets["DB_URL"])
 
 # --- YARDIMCI FONKSİYONLAR ---
 def bakiye_temizle(deger):
@@ -53,10 +85,8 @@ def bakiye_temizle(deger):
     if isinstance(deger, (int, float)): return float(deger)
     try:
         temiz = str(deger).replace(' TL', '').replace('₺', '').strip()
-        if '.' in temiz and ',' in temiz:
-            temiz = temiz.replace('.', '').replace(',', '.')
-        elif ',' in temiz:
-            temiz = temiz.replace(',', '.')
+        if '.' in temiz and ',' in temiz: temiz = temiz.replace('.', '').replace(',', '.')
+        elif ',' in temiz: temiz = temiz.replace(',', '.')
         return float(temiz)
     except ValueError: return 0.0
 
@@ -64,48 +94,27 @@ def bakiye_formatla(deger):
     try: return f"{float(deger):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
     except: return str(deger)
 
-# --- YENİ: WHATSAPP LİNK OLUŞTURUCU ---
 def whatsapp_link_olustur(telefon, isim, bakiye):
-    if not telefon or pd.isna(telefon):
-        return None
-        
-    # Sadece rakamları ayıkla (boşluk, parantez vb. temizle)
+    if not telefon or pd.isna(telefon): return None
     temiz_tel = "".join(filter(str.isdigit, str(telefon)))
+    if len(temiz_tel) == 10: temiz_tel = "90" + temiz_tel
+    elif len(temiz_tel) == 11 and temiz_tel.startswith("0"): temiz_tel = "9" + temiz_tel
+    if len(temiz_tel) < 10: return None
     
-    if len(temiz_tel) == 10:  # Örn: 5321234567
-        temiz_tel = "90" + temiz_tel
-    elif len(temiz_tel) == 11 and temiz_tel.startswith("0"):  # Örn: 05321234567
-        temiz_tel = "9" + temiz_tel
-        
-    if len(temiz_tel) < 10:  # Geçersiz numara
-        return None
-        
-    # Hazır Mesaj Şablonu
     mesaj = f"Merhaba {isim}, sistemimizde {bakiye:,.2f} TL tutarında bakiyeniz bulunmaktadır. İyi çalışmalar dileriz."
     mesaj_kodlu = urllib.parse.quote(mesaj)
-    
-    return f"https://wa.me/{temiz_tel}?text={mesaj_kodlu}"
+    return f"https://web.whatsapp.com/send?phone={temiz_tel}&text={mesaj_kodlu}"
 
 # ==========================================
-# YAN MENÜ (YEDEKLEME)
+# ANA UYGULAMA ARAYÜZÜ
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ Sistem İşlemleri")
-    st.info("Bulut sisteminde verilerin silinmemesi için gün sonunda .db yedeğinizi alın.")
-    
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "rb") as f:
-            st.download_button(label="📥 Veritabanını Yedekle (.db)", data=f, file_name="tahsilat_yedek.db", mime="application/octet-stream")
-    
-    st.markdown("---")
-    st.markdown("**Yedekten Geri Yükle**")
-    yedek_dosya = st.file_uploader("Yedek .db Dosyasını Seçin", type=["db"])
-    if yedek_dosya is not None:
-        if st.button("🔄 Yedeği Yükle"):
-            with open(DB_FILE, "wb") as f:
-                f.write(yedek_dosya.getbuffer())
-            st.success("Veritabanı başarıyla yüklendi!")
-            st.rerun()
+    st.header("⚙️ Sistem Durumu")
+    st.success("🟢 Canlı Bulut Veritabanına Bağlı")
+    st.write("Verileriniz anlık olarak buluta kaydedilmektedir. Manuel yedeğe gerek yoktur.")
+    if st.button("🚪 Güvenli Çıkış Yap (Log Out)"):
+        st.session_state["password_correct"] = False
+        st.rerun()
 
 st.title("📈 Netsis Tahsilat ve Cari Takip Sistemi")
 
@@ -123,6 +132,7 @@ with tab1:
             df = pd.read_excel(uploaded_file)
             conn = get_db_connection()
             c = conn.cursor()
+            
             c.execute("DELETE FROM ana_liste")
             c.execute("SELECT kod FROM takip")
             takipteki_kodlar = [row[0] for row in c.fetchall()]
@@ -138,15 +148,16 @@ with tab1:
                 bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
                 
                 if c_kod in takipteki_kodlar:
-                    c.execute("UPDATE takip SET bakiye=? WHERE kod=?", (bakiye_val, c_kod))
+                    c.execute("UPDATE takip SET bakiye=%s WHERE kod=%s", (bakiye_val, c_kod))
                     guncellenen_sayac += 1
                     continue
                 
                 c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
-                c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)", (c_kod, c_isim, c_tel, bakiye_val))
+                c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)", (c_kod, c_isim, c_tel, bakiye_val))
                 sayac += 1
                 
             conn.commit()
+            c.close()
             conn.close()
             
             mesaj = f"{sayac} adet yeni cari ana listeye eklendi."
@@ -165,6 +176,8 @@ with tab1:
         max_b = col2.number_input("Max Bakiye (TL)", value=9999999.0)
         arama = col3.text_input("Cari İsim veya Kod Ara").lower()
         
+        # Bakiye tipini numerik hale getirip filtreliyoruz
+        df_ana["bakiye"] = pd.to_numeric(df_ana["bakiye"], errors='coerce')
         mask = (df_ana["bakiye"] >= min_b) & (df_ana["bakiye"] <= max_b)
         if arama: mask = mask & (df_ana["isim"].str.lower().str.contains(arama) | df_ana["kod"].str.lower().str.contains(arama))
         
@@ -190,13 +203,20 @@ with tab1:
             c = conn.cursor()
             for index, row in secilenler.iterrows():
                 kod = row["Cari Kod"]
-                c.execute("INSERT OR REPLACE INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                          (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"], "Beklemede", "", ""))
-                c.execute("DELETE FROM ana_liste WHERE kod=?", (kod,))
+                # ON CONFLICT PostgreSQL kuralıdır
+                c.execute("""
+                    INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) 
+                    ON CONFLICT (kod) DO UPDATE SET 
+                    isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
+                """, (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"], "Beklemede", "", ""))
+                
+                c.execute("DELETE FROM ana_liste WHERE kod=%s", (kod,))
                 ilk_log = f"Sistem: Cari takibe alındı. (Bakiye: {row['Bakiye']:,.2f} TL)"
                 zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
-                c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (?, ?, ?)", (kod, zaman, ilk_log))
+                c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman, ilk_log))
             conn.commit()
+            c.close()
             conn.close()
             st.success("Seçilen cariler takibe aktarıldı!")
             st.rerun()
@@ -209,7 +229,8 @@ with tab2:
     df_takip = pd.read_sql_query("SELECT * FROM takip", conn)
     
     if not df_takip.empty:
-        # --- AKILLI UYARI SİSTEMİ ---
+        df_takip["bakiye"] = pd.to_numeric(df_takip["bakiye"], errors='coerce')
+        
         bugun = datetime.now().date()
         vadesi_gecen_cariler = []
         bugun_aranacaklar = []
@@ -260,7 +281,6 @@ with tab2:
         if secili_durum != "Tümü": df_gosterim = df_gosterim[df_gosterim["durum"] == secili_durum]
         if secili_ozel != "Tümü": df_gosterim = df_gosterim[df_gosterim["ozel_durum"] == secili_ozel]
         
-        # WhatsApp Sütununu Ekle
         df_gosterim["WhatsApp"] = df_gosterim.apply(lambda r: whatsapp_link_olustur(r['telefon'], r['isim'], r['bakiye']), axis=1)
         
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", 
@@ -277,7 +297,7 @@ with tab2:
                 "Durum": st.column_config.SelectboxColumn("Durum", options=["Beklemede", "Arandı", "Ödedi", "Dönmedi"]),
                 "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY"),
                 "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f"),
-                "WhatsApp": st.column_config.LinkColumn("WhatsApp İletişim", display_text="💬 Mesaj Gönder") # WhatsApp Sütunu Tanımı
+                "WhatsApp": st.column_config.LinkColumn("WhatsApp İletişim", display_text="💬 Mesaj Gönder")
             },
             disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye", "WhatsApp"],
             use_container_width=True,
@@ -293,12 +313,12 @@ with tab2:
             yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
             
             if (orj_row["durum"] != row["Durum"] or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
-                c.execute("UPDATE takip SET durum=?, ozel_durum=?, tarih=? WHERE kod=?", (row["Durum"], yeni_ozel, yeni_tarih, kod))
+                c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (row["Durum"], yeni_ozel, yeni_tarih, kod))
                 degisiklik_yapildi = True
                 
         if degisiklik_yapildi:
             conn.commit()
-            st.toast("✅ Tablo güncellemeleri veritabanına kaydedildi!", icon="💾")
+            st.toast("✅ Tablo güncellemeleri buluta kaydedildi!", icon="☁️")
             time.sleep(1)
             st.rerun()
 
@@ -307,13 +327,17 @@ with tab2:
             for index, row in silinecekler.iterrows():
                 kod = row["Cari Kod"]
                 if not kod.startswith("MANUEL-"):
-                    c.execute("INSERT OR REPLACE INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)",
-                              (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"]))
-                c.execute("DELETE FROM takip WHERE kod=?", (kod,))
-                c.execute("DELETE FROM loglar WHERE cari_kod=?", (kod,)) 
+                    c.execute("""
+                        INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
+                    """, (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"]))
+                c.execute("DELETE FROM takip WHERE kod=%s", (kod,))
+                c.execute("DELETE FROM loglar WHERE cari_kod=%s", (kod,)) 
             conn.commit()
             st.success("Seçilen cariler takipten çıkarıldı.")
             st.rerun()
+            
+        c.close()
 
         st.markdown("---")
         st.markdown("### 📝 Cari Detay ve Görüşme Geçmişi")
@@ -326,21 +350,23 @@ with tab2:
             log_col1, log_col2 = st.columns([1, 2])
             
             with log_col1:
-                st.info(f"**Bakiye:** {cari_detay['bakiye']:,.2f} TL\n\n**Telefon:** {cari_detay['telefon']}")
+                st.info(f"**Bakiye:** {float(cari_detay['bakiye']):,.2f} TL\n\n**Telefon:** {cari_detay['telefon']}")
                 with st.form(key=f"form_{secilen_kod}", clear_on_submit=True):
                     yeni_not = st.text_area("Bu cari için yeni bir görüşme notu ekleyin:", height=100)
-                    if st.form_submit_button("Notu Veritabanına Kaydet"):
+                    if st.form_submit_button("Notu Buluta Kaydet"):
                         if yeni_not.strip():
                             zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
-                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (?, ?, ?)", (secilen_kod, zaman, yeni_not.strip()))
+                            c = conn.cursor()
+                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (secilen_kod, zaman, yeni_not.strip()))
                             conn.commit()
+                            c.close()
                             st.success("Not başarıyla eklendi!")
                             st.rerun()
                         else: st.warning("Lütfen boş bir not kaydetmeyin.")
             
             with log_col2:
                 st.markdown(f"**{cari_detay['isim']} - Geçmiş Görüşmeler**")
-                df_log = pd.read_sql_query("SELECT tarih_saat, not_metni FROM loglar WHERE cari_kod=? ORDER BY id DESC", conn, params=(secilen_kod,))
+                df_log = pd.read_sql_query(f"SELECT tarih_saat, not_metni FROM loglar WHERE cari_kod='{secilen_kod}' ORDER BY id DESC", conn)
                 if not df_log.empty:
                     for index, row in df_log.iterrows():
                         st.markdown(f"🗓️ **{row['tarih_saat']}**")
@@ -361,19 +387,17 @@ with tab3:
     conn.close()
     
     if not df_rapor.empty:
+        df_rapor["bakiye"] = pd.to_numeric(df_rapor["bakiye"], errors='coerce')
         r_col1, r_col2 = st.columns(2)
         
-        # 1. PASTA GRAFİK: Genel Duruma Göre Dağılım
         with r_col1:
             st.markdown("#### Paranın Durum Dağılımı")
             df_pie = df_rapor.groupby("durum")["bakiye"].sum().reset_index()
-            # Plotly ile çizim
             fig_pie = px.pie(df_pie, values='bakiye', names='durum', 
                              hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
             fig_pie.update_traces(textposition='inside', textinfo='percent+label')
             st.plotly_chart(fig_pie, use_container_width=True)
             
-        # 2. ÇUBUK GRAFİK: Gelecek Nakit Akışı
         with r_col2:
             st.markdown("#### Planlanan Nakit Akışı (Tarihe Göre)")
             df_nakit = df_rapor[(df_rapor["durum"] != "Ödedi") & (df_rapor["tarih"] != "")]
@@ -399,6 +423,5 @@ with tab3:
             st.dataframe(df_ozel.style.format({"İçerideki Toplam Tutar (TL)": "{:,.2f} TL"}), use_container_width=True)
         else:
             st.write("Henüz bir 'Özel Durum' etiketi kullanmadınız.")
-            
     else:
         st.info("Rapor oluşturulabilmesi için Takip listenize veri eklemelisiniz.")
