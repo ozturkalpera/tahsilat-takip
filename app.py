@@ -16,7 +16,6 @@ DB_FILE = "tahsilat.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Takipteki Cariler Tablosu
     c.execute('''CREATE TABLE IF NOT EXISTS takip (
                     kod TEXT PRIMARY KEY, 
                     isim TEXT, 
@@ -26,14 +25,12 @@ def init_db():
                     ozel_durum TEXT, 
                     tarih TEXT
                 )''')
-    # Görüşme Geçmişi (Log) Tablosu
     c.execute('''CREATE TABLE IF NOT EXISTS loglar (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, 
                     cari_kod TEXT, 
                     tarih_saat TEXT, 
                     not_metni TEXT
                 )''')
-    # Ana Ekran (Excel'den gelenler) Tablosu
     c.execute('''CREATE TABLE IF NOT EXISTS ana_liste (
                     kod TEXT PRIMARY KEY, 
                     isim TEXT, 
@@ -50,9 +47,22 @@ def get_db_connection():
 
 # --- YARDIMCI FONKSİYONLAR ---
 def bakiye_temizle(deger):
+    """Excel'den gelen verinin sayı mı yoksa metin mi olduğunu anlar ve doğru çevirir."""
+    if pd.isna(deger): 
+        return 0.0
+    # Eğer zaten matematiksel bir sayıysa doğrudan kabul et (HATA BURADAN KAYNAKLANIYORDU)
+    if isinstance(deger, (int, float)): 
+        return float(deger)
+    
+    # Metin olarak geldiyse temizle
     try:
         temiz = str(deger).replace(' TL', '').replace('₺', '').strip()
-        temiz = temiz.replace('.', '').replace(',', '.')
+        # İçinde hem nokta hem virgül varsa (örn: 1.234,56)
+        if '.' in temiz and ',' in temiz:
+            temiz = temiz.replace('.', '').replace(',', '.')
+        # Sadece virgül varsa (örn: 1234,56)
+        elif ',' in temiz:
+            temiz = temiz.replace(',', '.')
         return float(temiz)
     except ValueError:
         return 0.0
@@ -68,7 +78,6 @@ with st.sidebar:
     st.header("⚙️ Sistem İşlemleri")
     st.info("Bulut sisteminde (Streamlit Cloud) verilerin silinmemesi için gün sonunda .db yedeğinizi alın.")
     
-    # DB İndirme
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "rb") as f:
             st.download_button(label="📥 Veritabanını Yedekle (.db)", data=f, file_name="tahsilat_yedek.db", mime="application/octet-stream")
@@ -101,10 +110,8 @@ with tab1:
             conn = get_db_connection()
             c = conn.cursor()
             
-            # Eski ana listeyi temizle
             c.execute("DELETE FROM ana_liste")
             
-            # Takipteki kodları al (onları ana listeye eklememek için)
             c.execute("SELECT kod FROM takip")
             takipteki_kodlar = [row[0] for row in c.fetchall()]
             
@@ -117,6 +124,7 @@ with tab1:
                 if c_kod in takipteki_kodlar: continue
                 
                 c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
+                # Düzeltilmiş temizleme fonksiyonu devrede:
                 bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
                 
                 c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)", 
@@ -144,7 +152,6 @@ with tab1:
             mask = mask & (df_ana["isim"].str.lower().str.contains(arama) | df_ana["kod"].str.lower().str.contains(arama))
         
         df_gosterim = df_ana[mask].copy()
-        # Görsellik için sütun isimlerini düzelt
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", "bakiye": "Bakiye"}, inplace=True)
         df_gosterim.insert(0, "Seç", False)
         
@@ -166,14 +173,11 @@ with tab1:
             c = conn.cursor()
             for index, row in secilenler.iterrows():
                 kod = row["Cari Kod"]
-                # Takibe ekle
                 c.execute("INSERT OR REPLACE INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) VALUES (?, ?, ?, ?, ?, ?, ?)",
                           (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"], "Beklemede", "", ""))
-                # Ana listeden sil
                 c.execute("DELETE FROM ana_liste WHERE kod=?", (kod,))
                 
-                # İlk log kaydını at
-                ilk_log = f"Sistem: Cari takibe alındı. (Bakiye: {row['Bakiye']} TL)"
+                ilk_log = f"Sistem: Cari takibe alındı. (Bakiye: {row['Bakiye']:,.2f} TL)"
                 zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
                 c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (?, ?, ?)", (kod, zaman, ilk_log))
                 
@@ -194,7 +198,6 @@ with tab2:
         odenen_bakiye = df_takip[df_takip['durum'] == 'Ödedi']['bakiye'].sum()
         bekleyen_sayisi = len(df_takip[df_takip['durum'] == 'Beklemede'])
         
-        # DASHBOARD
         st.markdown("### 📊 Genel Durum Özeti")
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Takipteki Cari Sayısı", len(df_takip))
@@ -219,7 +222,6 @@ with tab2:
                                     "bakiye": "Bakiye", "durum": "Durum", "ozel_durum": "Özel Durum", "tarih": "Tarih"}, inplace=True)
         df_gosterim.insert(0, "Seç", False)
         
-        # Tarihleri objeye çevir
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
         st.info("Hızlı Güncelleme: Durum, Özel Durum ve Tarih hücrelerini tablodan direkt değiştirebilirsiniz.")
@@ -237,7 +239,6 @@ with tab2:
             height=350
         )
         
-        # Tablodaki hızlı güncellemeleri DB'ye yaz
         degisiklik_yapildi = False
         c = conn.cursor()
         for index, row in edited_takip.iterrows():
@@ -261,7 +262,6 @@ with tab2:
             time.sleep(1)
             st.rerun()
 
-        # TOPLU SİLME
         silinecekler = edited_takip[edited_takip["Seç"] == True]
         if st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar"):
             for index, row in silinecekler.iterrows():
@@ -270,7 +270,7 @@ with tab2:
                     c.execute("INSERT OR REPLACE INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)",
                               (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"]))
                 c.execute("DELETE FROM takip WHERE kod=?", (kod,))
-                c.execute("DELETE FROM loglar WHERE cari_kod=?", (kod,)) # Logları da temizle
+                c.execute("DELETE FROM loglar WHERE cari_kod=?", (kod,)) 
             conn.commit()
             st.success("Seçilen cariler takipten çıkarıldı.")
             st.rerun()
@@ -282,18 +282,15 @@ with tab2:
         # ==========================================
         st.markdown("### 📝 Cari Detay ve Görüşme Geçmişi")
         
-        # Seçim kutusu için carileri listele (İsim - Kod şeklinde)
         cari_liste = df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
         secilen_cari_str = st.selectbox("Görüşme detaylarını görmek için bir cari seçin:", cari_liste)
         
         if secilen_cari_str:
-            # Seçilen carinin kodunu ayıkla
             secilen_kod = secilen_cari_str.split("(")[-1].replace(")", "")
             cari_detay = df_takip[df_takip['kod'] == secilen_kod].iloc[0]
             
             log_col1, log_col2 = st.columns([1, 2])
             
-            # Sol taraf: Yeni Not Ekleme
             with log_col1:
                 st.info(f"**Bakiye:** {cari_detay['bakiye']:,.2f} TL\n\n**Telefon:** {cari_detay['telefon']}")
                 with st.form(key=f"form_{secilen_kod}", clear_on_submit=True):
@@ -309,7 +306,6 @@ with tab2:
                         else:
                             st.warning("Lütfen boş bir not kaydetmeyin.")
             
-            # Sağ taraf: Geçmiş Logların Listelenmesi
             with log_col2:
                 st.markdown(f"**{cari_detay['isim']} - Geçmiş Görüşmeler**")
                 df_log = pd.read_sql_query("SELECT tarih_saat, not_metni FROM loglar WHERE cari_kod=? ORDER BY id DESC", conn, params=(secilen_kod,))
