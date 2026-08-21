@@ -5,6 +5,7 @@ import os
 import io
 import time
 from datetime import datetime
+import plotly.express as px  # YENİ: Görsel raporlama için eklendi
 
 st.set_page_config(page_title="Tahsilat ve Cari Takip", page_icon="📈", layout="wide")
 
@@ -47,11 +48,8 @@ def get_db_connection():
 
 # --- YARDIMCI FONKSİYONLAR ---
 def bakiye_temizle(deger):
-    if pd.isna(deger): 
-        return 0.0
-    if isinstance(deger, (int, float)): 
-        return float(deger)
-    
+    if pd.isna(deger): return 0.0
+    if isinstance(deger, (int, float)): return float(deger)
     try:
         temiz = str(deger).replace(' TL', '').replace('₺', '').strip()
         if '.' in temiz and ',' in temiz:
@@ -59,8 +57,7 @@ def bakiye_temizle(deger):
         elif ',' in temiz:
             temiz = temiz.replace(',', '.')
         return float(temiz)
-    except ValueError:
-        return 0.0
+    except ValueError: return 0.0
 
 def bakiye_formatla(deger):
     try: return f"{float(deger):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -71,7 +68,7 @@ def bakiye_formatla(deger):
 # ==========================================
 with st.sidebar:
     st.header("⚙️ Sistem İşlemleri")
-    st.info("Bulut sisteminde (Streamlit Cloud) verilerin silinmemesi için gün sonunda .db yedeğinizi alın.")
+    st.info("Bulut sisteminde verilerin silinmemesi için gün sonunda .db yedeğinizi alın.")
     
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "rb") as f:
@@ -89,7 +86,8 @@ with st.sidebar:
 
 st.title("📈 Netsis Tahsilat ve Cari Takip Sistemi")
 
-tab1, tab2 = st.tabs(["📋 Tüm Cariler (Ana Ekran)", "🔍 Tahsilat Takip Sayfası"])
+# 3. BİR SEKME EKLENDİ (RAPORLAR)
+tab1, tab2, tab3 = st.tabs(["📋 Tüm Cariler (Ana Ekran)", "🔍 Tahsilat Takip Sayfası", "📊 Raporlar ve Analiz"])
 
 # ==========================================
 # 1. SEKME: ANA EKRAN
@@ -101,18 +99,14 @@ with tab1:
     if uploaded_file is not None:
         if st.button("Verileri Aktar ve Listeyi Yenile", type="primary"):
             df = pd.read_excel(uploaded_file)
-            
             conn = get_db_connection()
             c = conn.cursor()
-            
-            # Ana listeyi temizle
             c.execute("DELETE FROM ana_liste")
-            
             c.execute("SELECT kod FROM takip")
             takipteki_kodlar = [row[0] for row in c.fetchall()]
             
             sayac = 0
-            guncellenen_sayac = 0 # Takipte olup bakiyesi güncellenenler
+            guncellenen_sayac = 0 
             
             for index, row in df.iterrows():
                 c_isim = str(row.get("Cari İsim", ""))
@@ -121,25 +115,20 @@ with tab1:
                 c_kod = str(row.get("Cari Kod", "-"))
                 bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
                 
-                # --- YENİ EKLENEN KISIM: BAKİYE GÜNCELLEMESİ ---
                 if c_kod in takipteki_kodlar:
                     c.execute("UPDATE takip SET bakiye=? WHERE kod=?", (bakiye_val, c_kod))
                     guncellenen_sayac += 1
                     continue
                 
                 c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
-                
-                c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)", 
-                          (c_kod, c_isim, c_tel, bakiye_val))
+                c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)", (c_kod, c_isim, c_tel, bakiye_val))
                 sayac += 1
                 
             conn.commit()
             conn.close()
             
             mesaj = f"{sayac} adet yeni cari ana listeye eklendi."
-            if guncellenen_sayac > 0:
-                mesaj += f"\n\n✅ Takipteki {guncellenen_sayac} adet carinin bakiyesi yeni raporla güncellendi!"
-                
+            if guncellenen_sayac > 0: mesaj += f"\n\n✅ Takipteki {guncellenen_sayac} adet carinin bakiyesi güncellendi!"
             st.success(mesaj)
             st.rerun()
 
@@ -155,8 +144,7 @@ with tab1:
         arama = col3.text_input("Cari İsim veya Kod Ara").lower()
         
         mask = (df_ana["bakiye"] >= min_b) & (df_ana["bakiye"] <= max_b)
-        if arama: 
-            mask = mask & (df_ana["isim"].str.lower().str.contains(arama) | df_ana["kod"].str.lower().str.contains(arama))
+        if arama: mask = mask & (df_ana["isim"].str.lower().str.contains(arama) | df_ana["kod"].str.lower().str.contains(arama))
         
         df_gosterim = df_ana[mask].copy()
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", "bakiye": "Bakiye"}, inplace=True)
@@ -183,24 +171,50 @@ with tab1:
                 c.execute("INSERT OR REPLACE INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) VALUES (?, ?, ?, ?, ?, ?, ?)",
                           (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"], "Beklemede", "", ""))
                 c.execute("DELETE FROM ana_liste WHERE kod=?", (kod,))
-                
                 ilk_log = f"Sistem: Cari takibe alındı. (Bakiye: {row['Bakiye']:,.2f} TL)"
                 zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
                 c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (?, ?, ?)", (kod, zaman, ilk_log))
-                
             conn.commit()
             conn.close()
             st.success("Seçilen cariler takibe aktarıldı!")
             st.rerun()
 
 # ==========================================
-# 2. SEKME: TAHSİLAT TAKİP VE LOG SİSTEMİ
+# 2. SEKME: TAHSİLAT TAKİP VE LOG
 # ==========================================
 with tab2:
     conn = get_db_connection()
     df_takip = pd.read_sql_query("SELECT * FROM takip", conn)
     
     if not df_takip.empty:
+        # --- YENİ: AKILLI UYARI SİSTEMİ ---
+        bugun = datetime.now().date()
+        vadesi_gecen_cariler = []
+        bugun_aranacaklar = []
+        
+        for index, row in df_takip.iterrows():
+            if row["durum"] == "Ödedi": continue
+            if row["tarih"]:
+                try:
+                    tarih_obj = datetime.strptime(row["tarih"], "%d.%m.%Y").date()
+                    if tarih_obj < bugun: vadesi_gecen_cariler.append(row)
+                    elif tarih_obj == bugun: bugun_aranacaklar.append(row)
+                except: pass
+                
+        if vadesi_gecen_cariler or bugun_aranacaklar:
+            with st.expander("🚨 AKILLI UYARILAR (İlgilenilmesi Gerekenler)", expanded=True):
+                if vadesi_gecen_cariler:
+                    toplam_vade_gecen = sum(float(r['bakiye']) for r in vadesi_gecen_cariler)
+                    st.error(f"**VADESİ GEÇEN {len(vadesi_gecen_cariler)} CARİ VAR!** (Toplam Risk: {toplam_vade_gecen:,.2f} TL)")
+                    for r in vadesi_gecen_cariler:
+                        st.write(f"⚠️ {r['isim']} | Tarih: {r['tarih']} | Bakiye: {float(r['bakiye']):,.2f} TL")
+                if bugun_aranacaklar:
+                    toplam_bugun = sum(float(r['bakiye']) for r in bugun_aranacaklar)
+                    st.warning(f"**BUGÜN ARANACAK {len(bugun_aranacaklar)} CARİ VAR!** (Toplam Beklenti: {toplam_bugun:,.2f} TL)")
+                    for r in bugun_aranacaklar:
+                        st.write(f"📞 {r['isim']} | Bakiye: {float(r['bakiye']):,.2f} TL")
+            st.markdown("---")
+
         toplam_bakiye = df_takip['bakiye'].sum()
         odenen_bakiye = df_takip[df_takip['durum'] == 'Ödedi']['bakiye'].sum()
         bekleyen_sayisi = len(df_takip[df_takip['durum'] == 'Beklemede'])
@@ -216,7 +230,6 @@ with tab2:
         col_f1, col_f2 = st.columns(2)
         durumlar = ["Tümü", "Beklemede", "Arandı", "Ödedi", "Dönmedi"]
         secili_durum = col_f1.selectbox("Durum Filtresi", durumlar)
-        
         temiz_ozeller = [str(x) for x in df_takip["ozel_durum"].unique() if x]
         ozel_durumlar = ["Tümü"] + sorted(temiz_ozeller)
         secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ozel_durumlar)
@@ -228,7 +241,6 @@ with tab2:
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", 
                                     "bakiye": "Bakiye", "durum": "Durum", "ozel_durum": "Özel Durum", "tarih": "Tarih"}, inplace=True)
         df_gosterim.insert(0, "Seç", False)
-        
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
         st.info("Hızlı Güncelleme: Durum, Özel Durum ve Tarih hücrelerini tablodan direkt değiştirebilirsiniz.")
@@ -251,16 +263,11 @@ with tab2:
         for index, row in edited_takip.iterrows():
             kod = row["Cari Kod"]
             orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
-            
             yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
             yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
             
-            if (orj_row["durum"] != row["Durum"] or 
-                orj_row["ozel_durum"] != yeni_ozel or 
-                orj_row["tarih"] != yeni_tarih):
-                
-                c.execute("UPDATE takip SET durum=?, ozel_durum=?, tarih=? WHERE kod=?", 
-                          (row["Durum"], yeni_ozel, yeni_tarih, kod))
+            if (orj_row["durum"] != row["Durum"] or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
+                c.execute("UPDATE takip SET durum=?, ozel_durum=?, tarih=? WHERE kod=?", (row["Durum"], yeni_ozel, yeni_tarih, kod))
                 degisiklik_yapildi = True
                 
         if degisiklik_yapildi:
@@ -283,19 +290,13 @@ with tab2:
             st.rerun()
 
         st.markdown("---")
-        
-        # ==========================================
-        # LOG SİSTEMİ (GÖRÜŞME GEÇMİŞİ)
-        # ==========================================
         st.markdown("### 📝 Cari Detay ve Görüşme Geçmişi")
-        
         cari_liste = df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
         secilen_cari_str = st.selectbox("Görüşme detaylarını görmek için bir cari seçin:", cari_liste)
         
         if secilen_cari_str:
             secilen_kod = secilen_cari_str.split("(")[-1].replace(")", "")
             cari_detay = df_takip[df_takip['kod'] == secilen_kod].iloc[0]
-            
             log_col1, log_col2 = st.columns([1, 2])
             
             with log_col1:
@@ -305,27 +306,78 @@ with tab2:
                     if st.form_submit_button("Notu Veritabanına Kaydet"):
                         if yeni_not.strip():
                             zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
-                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (?, ?, ?)", 
-                                      (secilen_kod, zaman, yeni_not.strip()))
+                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (?, ?, ?)", (secilen_kod, zaman, yeni_not.strip()))
                             conn.commit()
                             st.success("Not başarıyla eklendi!")
                             st.rerun()
-                        else:
-                            st.warning("Lütfen boş bir not kaydetmeyin.")
+                        else: st.warning("Lütfen boş bir not kaydetmeyin.")
             
             with log_col2:
                 st.markdown(f"**{cari_detay['isim']} - Geçmiş Görüşmeler**")
                 df_log = pd.read_sql_query("SELECT tarih_saat, not_metni FROM loglar WHERE cari_kod=? ORDER BY id DESC", conn, params=(secilen_kod,))
-                
                 if not df_log.empty:
                     for index, row in df_log.iterrows():
                         st.markdown(f"🗓️ **{row['tarih_saat']}**")
                         st.markdown(f"> {row['not_metni']}")
                         st.divider()
-                else:
-                    st.write("Bu cari için henüz bir görüşme notu bulunmuyor.")
-                    
+                else: st.write("Bu cari için henüz bir görüşme notu bulunmuyor.")
     else:
         st.info("Takip listeniz şu an boş. Ana ekrandan cari aktarabilirsiniz.")
-        
     conn.close()
+
+# ==========================================
+# 3. SEKME: GÖRSEL RAPORLAR
+# ==========================================
+with tab3:
+    st.markdown("### 📊 Gelişmiş Finans ve Tahsilat Raporları")
+    conn = get_db_connection()
+    df_rapor = pd.read_sql_query("SELECT * FROM takip", conn)
+    conn.close()
+    
+    if not df_rapor.empty:
+        r_col1, r_col2 = st.columns(2)
+        
+        # 1. PASTA GRAFİK: Genel Duruma Göre Dağılım
+        with r_col1:
+            st.markdown("#### Paranın Durum Dağılımı")
+            df_pie = df_rapor.groupby("durum")["bakiye"].sum().reset_index()
+            # Plotly ile çizim
+            fig_pie = px.pie(df_pie, values='bakiye', names='durum', 
+                             hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
+            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+        # 2. ÇUBUK GRAFİK: Gelecek Nakit Akışı
+        with r_col2:
+            st.markdown("#### Planlanan Nakit Akışı (Tarihe Göre)")
+            # Sadece ödemesi alınmamış ve tarihi girilmiş olanları filtrele
+            df_nakit = df_rapor[(df_rapor["durum"] != "Ödedi") & (df_rapor["tarih"] != "")]
+            if not df_nakit.empty:
+                # Tarih formatını pandas tarihine çevirip gün/ay/yıl sırasına diziyoruz
+                df_nakit["tarih_obj"] = pd.to_datetime(df_nakit["tarih"], format="%d.%m.%Y", errors='coerce')
+                df_nakit = df_nakit.dropna(subset=["tarih_obj"]).sort_values("tarih_obj")
+                
+                # Aynı tarihteki alacakları topla
+                df_bar = df_nakit.groupby("tarih")["bakiye"].sum().reset_index()
+                
+                fig_bar = px.bar(df_bar, x='tarih', y='bakiye', text='bakiye',
+                                 labels={'tarih': 'Ödeme Tarihi', 'bakiye': 'Beklenen Tutar (TL)'},
+                                 color_discrete_sequence=['#1f77b4'])
+                fig_bar.update_traces(texttemplate='%{text:,.2f} TL', textposition='outside')
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("Tarihi planlanmış aktif bir tahsilat bulunmuyor.")
+                
+        # Alt kısımda "Özel Durum" analiz tablosu
+        st.markdown("#### 🎯 Özel Durumlara Göre Risk Analizi")
+        df_ozel = df_rapor[df_rapor["ozel_durum"] != ""].groupby("ozel_durum")["bakiye"].sum().reset_index()
+        if not df_ozel.empty:
+            df_ozel = df_ozel.sort_values(by="bakiye", ascending=False)
+            df_ozel.rename(columns={"ozel_durum": "Sizin Eklediğiniz Durum", "bakiye": "İçerideki Toplam Tutar (TL)"}, inplace=True)
+            # Sayıları formatlayarak göster
+            st.dataframe(df_ozel.style.format({"İçerideki Toplam Tutar (TL)": "{:,.2f} TL"}), use_container_width=True)
+        else:
+            st.write("Henüz bir 'Özel Durum' etiketi kullanmadınız.")
+            
+    else:
+        st.info("Rapor oluşturulabilmesi için Takip listenize veri eklemelisiniz.")
