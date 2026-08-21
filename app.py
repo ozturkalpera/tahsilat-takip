@@ -47,20 +47,15 @@ def get_db_connection():
 
 # --- YARDIMCI FONKSİYONLAR ---
 def bakiye_temizle(deger):
-    """Excel'den gelen verinin sayı mı yoksa metin mi olduğunu anlar ve doğru çevirir."""
     if pd.isna(deger): 
         return 0.0
-    # Eğer zaten matematiksel bir sayıysa doğrudan kabul et (HATA BURADAN KAYNAKLANIYORDU)
     if isinstance(deger, (int, float)): 
         return float(deger)
     
-    # Metin olarak geldiyse temizle
     try:
         temiz = str(deger).replace(' TL', '').replace('₺', '').strip()
-        # İçinde hem nokta hem virgül varsa (örn: 1.234,56)
         if '.' in temiz and ',' in temiz:
             temiz = temiz.replace('.', '').replace(',', '.')
-        # Sadece virgül varsa (örn: 1234,56)
         elif ',' in temiz:
             temiz = temiz.replace(',', '.')
         return float(temiz)
@@ -110,22 +105,29 @@ with tab1:
             conn = get_db_connection()
             c = conn.cursor()
             
+            # Ana listeyi temizle
             c.execute("DELETE FROM ana_liste")
             
             c.execute("SELECT kod FROM takip")
             takipteki_kodlar = [row[0] for row in c.fetchall()]
             
             sayac = 0
+            guncellenen_sayac = 0 # Takipte olup bakiyesi güncellenenler
+            
             for index, row in df.iterrows():
                 c_isim = str(row.get("Cari İsim", ""))
                 if pd.isna(row.get("Cari İsim")) or not c_isim.strip(): continue
                 
                 c_kod = str(row.get("Cari Kod", "-"))
-                if c_kod in takipteki_kodlar: continue
+                bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
+                
+                # --- YENİ EKLENEN KISIM: BAKİYE GÜNCELLEMESİ ---
+                if c_kod in takipteki_kodlar:
+                    c.execute("UPDATE takip SET bakiye=? WHERE kod=?", (bakiye_val, c_kod))
+                    guncellenen_sayac += 1
+                    continue
                 
                 c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
-                # Düzeltilmiş temizleme fonksiyonu devrede:
-                bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
                 
                 c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)", 
                           (c_kod, c_isim, c_tel, bakiye_val))
@@ -133,7 +135,12 @@ with tab1:
                 
             conn.commit()
             conn.close()
-            st.success(f"{sayac} adet cari başarıyla yüklendi.")
+            
+            mesaj = f"{sayac} adet yeni cari ana listeye eklendi."
+            if guncellenen_sayac > 0:
+                mesaj += f"\n\n✅ Takipteki {guncellenen_sayac} adet carinin bakiyesi yeni raporla güncellendi!"
+                
+            st.success(mesaj)
             st.rerun()
 
     st.markdown("---")
