@@ -4,8 +4,9 @@ import sqlite3
 import os
 import io
 import time
+import urllib.parse  # YENİ: WhatsApp mesajını linke çevirmek için
 from datetime import datetime
-import plotly.express as px  # YENİ: Görsel raporlama için eklendi
+import plotly.express as px
 
 st.set_page_config(page_title="Tahsilat ve Cari Takip", page_icon="📈", layout="wide")
 
@@ -63,6 +64,28 @@ def bakiye_formatla(deger):
     try: return f"{float(deger):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
     except: return str(deger)
 
+# --- YENİ: WHATSAPP LİNK OLUŞTURUCU ---
+def whatsapp_link_olustur(telefon, isim, bakiye):
+    if not telefon or pd.isna(telefon):
+        return None
+        
+    # Sadece rakamları ayıkla (boşluk, parantez vb. temizle)
+    temiz_tel = "".join(filter(str.isdigit, str(telefon)))
+    
+    if len(temiz_tel) == 10:  # Örn: 5321234567
+        temiz_tel = "90" + temiz_tel
+    elif len(temiz_tel) == 11 and temiz_tel.startswith("0"):  # Örn: 05321234567
+        temiz_tel = "9" + temiz_tel
+        
+    if len(temiz_tel) < 10:  # Geçersiz numara
+        return None
+        
+    # Hazır Mesaj Şablonu
+    mesaj = f"Merhaba {isim}, sistemimizde {bakiye:,.2f} TL tutarında bakiyeniz bulunmaktadır. İyi çalışmalar dileriz."
+    mesaj_kodlu = urllib.parse.quote(mesaj)
+    
+    return f"https://wa.me/{temiz_tel}?text={mesaj_kodlu}"
+
 # ==========================================
 # YAN MENÜ (YEDEKLEME)
 # ==========================================
@@ -86,7 +109,6 @@ with st.sidebar:
 
 st.title("📈 Netsis Tahsilat ve Cari Takip Sistemi")
 
-# 3. BİR SEKME EKLENDİ (RAPORLAR)
 tab1, tab2, tab3 = st.tabs(["📋 Tüm Cariler (Ana Ekran)", "🔍 Tahsilat Takip Sayfası", "📊 Raporlar ve Analiz"])
 
 # ==========================================
@@ -187,7 +209,7 @@ with tab2:
     df_takip = pd.read_sql_query("SELECT * FROM takip", conn)
     
     if not df_takip.empty:
-        # --- YENİ: AKILLI UYARI SİSTEMİ ---
+        # --- AKILLI UYARI SİSTEMİ ---
         bugun = datetime.now().date()
         vadesi_gecen_cariler = []
         bugun_aranacaklar = []
@@ -238,6 +260,9 @@ with tab2:
         if secili_durum != "Tümü": df_gosterim = df_gosterim[df_gosterim["durum"] == secili_durum]
         if secili_ozel != "Tümü": df_gosterim = df_gosterim[df_gosterim["ozel_durum"] == secili_ozel]
         
+        # WhatsApp Sütununu Ekle
+        df_gosterim["WhatsApp"] = df_gosterim.apply(lambda r: whatsapp_link_olustur(r['telefon'], r['isim'], r['bakiye']), axis=1)
+        
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", 
                                     "bakiye": "Bakiye", "durum": "Durum", "ozel_durum": "Özel Durum", "tarih": "Tarih"}, inplace=True)
         df_gosterim.insert(0, "Seç", False)
@@ -251,9 +276,10 @@ with tab2:
                 "Seç": st.column_config.CheckboxColumn("Sil", default=False),
                 "Durum": st.column_config.SelectboxColumn("Durum", options=["Beklemede", "Arandı", "Ödedi", "Dönmedi"]),
                 "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY"),
-                "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f")
+                "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f"),
+                "WhatsApp": st.column_config.LinkColumn("WhatsApp İletişim", display_text="💬 Mesaj Gönder") # WhatsApp Sütunu Tanımı
             },
-            disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye"],
+            disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye", "WhatsApp"],
             use_container_width=True,
             height=350
         )
@@ -350,14 +376,11 @@ with tab3:
         # 2. ÇUBUK GRAFİK: Gelecek Nakit Akışı
         with r_col2:
             st.markdown("#### Planlanan Nakit Akışı (Tarihe Göre)")
-            # Sadece ödemesi alınmamış ve tarihi girilmiş olanları filtrele
             df_nakit = df_rapor[(df_rapor["durum"] != "Ödedi") & (df_rapor["tarih"] != "")]
             if not df_nakit.empty:
-                # Tarih formatını pandas tarihine çevirip gün/ay/yıl sırasına diziyoruz
                 df_nakit["tarih_obj"] = pd.to_datetime(df_nakit["tarih"], format="%d.%m.%Y", errors='coerce')
                 df_nakit = df_nakit.dropna(subset=["tarih_obj"]).sort_values("tarih_obj")
                 
-                # Aynı tarihteki alacakları topla
                 df_bar = df_nakit.groupby("tarih")["bakiye"].sum().reset_index()
                 
                 fig_bar = px.bar(df_bar, x='tarih', y='bakiye', text='bakiye',
@@ -368,13 +391,11 @@ with tab3:
             else:
                 st.info("Tarihi planlanmış aktif bir tahsilat bulunmuyor.")
                 
-        # Alt kısımda "Özel Durum" analiz tablosu
         st.markdown("#### 🎯 Özel Durumlara Göre Risk Analizi")
         df_ozel = df_rapor[df_rapor["ozel_durum"] != ""].groupby("ozel_durum")["bakiye"].sum().reset_index()
         if not df_ozel.empty:
             df_ozel = df_ozel.sort_values(by="bakiye", ascending=False)
             df_ozel.rename(columns={"ozel_durum": "Sizin Eklediğiniz Durum", "bakiye": "İçerideki Toplam Tutar (TL)"}, inplace=True)
-            # Sayıları formatlayarak göster
             st.dataframe(df_ozel.style.format({"İçerideki Toplam Tutar (TL)": "{:,.2f} TL"}), use_container_width=True)
         else:
             st.write("Henüz bir 'Özel Durum' etiketi kullanmadınız.")
