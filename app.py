@@ -121,7 +121,6 @@ with tab1:
                 c_isim = str(row.get("Cari İsim", ""))
                 if pd.isna(row.get("Cari İsim")) or not c_isim.strip(): continue
                 
-                # Cari Kod boşsa veya NaN ise, benzersiz bir geçici kod üret
                 c_kod = str(row.get("Cari Kod", "")).strip()
                 if c_kod == "nan" or c_kod == "-" or not c_kod:
                     c_kod = f"KODSUZ-{index}-{int(time.time())}"
@@ -135,7 +134,6 @@ with tab1:
                 
                 c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
                 
-                # AYNI KODDAN İKİ TANE VARSA ÇÖKMESİN DİYE ON CONFLICT KURALI EKLENDİ
                 c.execute("""
                     INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
                     ON CONFLICT (kod) DO UPDATE SET 
@@ -185,26 +183,36 @@ with tab1:
         
         secilenler = edited_df[edited_df["Seç"] == True]
         if st.button("Seçilenleri Takibe Aktar ➔", type="primary") and not secilenler.empty:
-            conn = get_db_connection()
-            c = conn.cursor()
-            for index, row in secilenler.iterrows():
-                kod = row["Cari Kod"]
-                c.execute("""
-                    INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s) 
-                    ON CONFLICT (kod) DO UPDATE SET 
-                    isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
-                """, (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"], "Beklemede", "", ""))
+            try:
+                conn = get_db_connection()
+                c = conn.cursor()
+                for index, row in secilenler.iterrows():
+                    # Veri Tiplerini Güvence Altına Alma (HATA ÇÖZÜMÜ BURADA)
+                    kod = str(row["Cari Kod"])
+                    isim = str(row["Cari İsim"])
+                    telefon = str(row["Telefon"])
+                    bakiye = float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0
+                    
+                    c.execute("""
+                        INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s) 
+                        ON CONFLICT (kod) DO UPDATE SET 
+                        isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
+                    """, (kod, isim, telefon, bakiye, "Beklemede", "", ""))
+                    
+                    c.execute("DELETE FROM ana_liste WHERE kod=%s", (kod,))
+                    ilk_log = f"Sistem: Cari takibe alındı. (Bakiye: {bakiye:,.2f} TL)"
+                    zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
+                    c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman, ilk_log))
                 
-                c.execute("DELETE FROM ana_liste WHERE kod=%s", (kod,))
-                ilk_log = f"Sistem: Cari takibe alındı. (Bakiye: {row['Bakiye']:,.2f} TL)"
-                zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
-                c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman, ilk_log))
-            conn.commit()
-            c.close()
-            conn.close()
-            st.success("Seçilen cariler takibe aktarıldı!")
-            st.rerun()
+                conn.commit()
+                c.close()
+                conn.close()
+                st.success("Seçilen cariler takibe aktarıldı!")
+                time.sleep(1) # Kullanıcının başarı mesajını görebilmesi için minik bir bekleme
+                st.rerun()
+            except Exception as e:
+                st.error(f"Aktarım sırasında bir hata oluştu: {e}")
 
 # ==========================================
 # 2. SEKME: TAHSİLAT TAKİP VE LOG
@@ -292,13 +300,14 @@ with tab2:
         degisiklik_yapildi = False
         c = conn.cursor()
         for index, row in edited_takip.iterrows():
-            kod = row["Cari Kod"]
+            kod = str(row["Cari Kod"])
             orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
             yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
             yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
+            yeni_durum = str(row["Durum"])
             
-            if (orj_row["durum"] != row["Durum"] or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
-                c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (row["Durum"], yeni_ozel, yeni_tarih, kod))
+            if (orj_row["durum"] != yeni_durum or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
+                c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (yeni_durum, yeni_ozel, yeni_tarih, kod))
                 degisiklik_yapildi = True
                 
         if degisiklik_yapildi:
@@ -309,18 +318,26 @@ with tab2:
 
         silinecekler = edited_takip[edited_takip["Seç"] == True]
         if st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar"):
-            for index, row in silinecekler.iterrows():
-                kod = row["Cari Kod"]
-                if not kod.startswith("MANUEL-") and not kod.startswith("KODSUZ-"):
-                    c.execute("""
-                        INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
-                    """, (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"]))
-                c.execute("DELETE FROM takip WHERE kod=%s", (kod,))
-                c.execute("DELETE FROM loglar WHERE cari_kod=%s", (kod,)) 
-            conn.commit()
-            st.success("Seçilen cariler takipten çıkarıldı.")
-            st.rerun()
+            try:
+                for index, row in silinecekler.iterrows():
+                    kod = str(row["Cari Kod"])
+                    isim = str(row["Cari İsim"])
+                    telefon = str(row["Telefon"])
+                    bakiye = float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0
+                    
+                    if not kod.startswith("MANUEL-") and not kod.startswith("KODSUZ-"):
+                        c.execute("""
+                            INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
+                        """, (kod, isim, telefon, bakiye))
+                    c.execute("DELETE FROM takip WHERE kod=%s", (kod,))
+                    c.execute("DELETE FROM loglar WHERE cari_kod=%s", (kod,)) 
+                conn.commit()
+                st.success("Seçilen cariler takipten çıkarıldı.")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Çıkarma işlemi sırasında bir hata oluştu: {e}")
             
         c.close()
 
