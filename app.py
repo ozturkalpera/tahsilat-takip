@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import json
+import sqlite3
 import os
 import io
 import time
@@ -8,9 +8,47 @@ from datetime import datetime
 
 st.set_page_config(page_title="Tahsilat ve Cari Takip", page_icon="📈", layout="wide")
 
-TAKIP_DOSYASI = "takip_verileri.json"
-ANA_LISTE_DOSYASI = "ana_liste_verileri.json"
+DB_FILE = "tahsilat.db"
 
+# ==========================================
+# VERİTABANI (SQLite) İŞLEMLERİ
+# ==========================================
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    # Takipteki Cariler Tablosu
+    c.execute('''CREATE TABLE IF NOT EXISTS takip (
+                    kod TEXT PRIMARY KEY, 
+                    isim TEXT, 
+                    telefon TEXT, 
+                    bakiye REAL, 
+                    durum TEXT, 
+                    ozel_durum TEXT, 
+                    tarih TEXT
+                )''')
+    # Görüşme Geçmişi (Log) Tablosu
+    c.execute('''CREATE TABLE IF NOT EXISTS loglar (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                    cari_kod TEXT, 
+                    tarih_saat TEXT, 
+                    not_metni TEXT
+                )''')
+    # Ana Ekran (Excel'den gelenler) Tablosu
+    c.execute('''CREATE TABLE IF NOT EXISTS ana_liste (
+                    kod TEXT PRIMARY KEY, 
+                    isim TEXT, 
+                    telefon TEXT, 
+                    bakiye REAL
+                )''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def get_db_connection():
+    return sqlite3.connect(DB_FILE)
+
+# --- YARDIMCI FONKSİYONLAR ---
 def bakiye_temizle(deger):
     try:
         temiz = str(deger).replace(' TL', '').replace('₺', '').strip()
@@ -20,75 +58,30 @@ def bakiye_temizle(deger):
         return 0.0
 
 def bakiye_formatla(deger):
-    try:
-        return f"{float(deger):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return str(deger)
+    try: return f"{float(deger):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
+    except: return str(deger)
 
-def tarih_cozumle(tarih_str):
-    if not tarih_str: return None
-    try: return pd.to_datetime(tarih_str, format="%d.%m.%Y").date()
-    except:
-        try: return pd.to_datetime(tarih_str).date()
-        except: return None
-
-def verileri_yukle():
-    if os.path.exists(TAKIP_DOSYASI):
-        try:
-            with open(TAKIP_DOSYASI, 'r', encoding='utf-8') as f: 
-                veri = json.load(f)
-                return veri if isinstance(veri, dict) else {}
-        except: return {}
-    return {}
-
-def ana_liste_yukle():
-    if os.path.exists(ANA_LISTE_DOSYASI):
-        try:
-            with open(ANA_LISTE_DOSYASI, 'r', encoding='utf-8') as f: 
-                veri = json.load(f)
-                return veri if isinstance(veri, list) else []
-        except: return []
-    return []
-
-def verileri_kaydet():
-    if isinstance(st.session_state.takip, dict):
-        with open(TAKIP_DOSYASI, 'w', encoding='utf-8') as f:
-            json.dump(st.session_state.takip, f, ensure_ascii=False, indent=4)
-
-def ana_liste_kaydet():
-    if isinstance(st.session_state.ana_liste, list):
-        with open(ANA_LISTE_DOSYASI, 'w', encoding='utf-8') as f:
-            json.dump(st.session_state.ana_liste, f, ensure_ascii=False, indent=4)
-
-if 'takip' not in st.session_state or not isinstance(st.session_state.takip, dict): 
-    st.session_state.takip = verileri_yukle()
-if 'ana_liste' not in st.session_state or not isinstance(st.session_state.ana_liste, list): 
-    st.session_state.ana_liste = ana_liste_yukle()
-
+# ==========================================
+# YAN MENÜ (YEDEKLEME)
+# ==========================================
 with st.sidebar:
     st.header("⚙️ Sistem İşlemleri")
-    st.info("Bulut sisteminde verilerinizin kaybolmaması için gün sonunda yedeğinizi indirin.")
+    st.info("Bulut sisteminde (Streamlit Cloud) verilerin silinmemesi için gün sonunda .db yedeğinizi alın.")
     
-    if st.session_state.takip:
-        json_data = json.dumps(st.session_state.takip, ensure_ascii=False, indent=4)
-        st.download_button(label="📥 Takip Verilerini Yedekle", data=json_data, file_name="takip_yedek.json", mime="application/json")
+    # DB İndirme
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "rb") as f:
+            st.download_button(label="📥 Veritabanını Yedekle (.db)", data=f, file_name="tahsilat_yedek.db", mime="application/octet-stream")
     
     st.markdown("---")
     st.markdown("**Yedekten Geri Yükle**")
-    yedek_dosya = st.file_uploader("Yedek JSON Dosyasını Seçin", type=["json"])
+    yedek_dosya = st.file_uploader("Yedek .db Dosyasını Seçin", type=["db"])
     if yedek_dosya is not None:
         if st.button("🔄 Yedeği Yükle"):
-            try:
-                yuklenen_veri = json.load(yedek_dosya)
-                if isinstance(yuklenen_veri, dict):
-                    st.session_state.takip = yuklenen_veri
-                    verileri_kaydet()
-                    st.success("Yedek başarıyla yüklendi!")
-                    st.rerun()
-                else:
-                    st.error("Hata: Geçersiz dosya formatı.")
-            except Exception as e:
-                st.error("Dosya okunurken bir hata oluştu.")
+            with open(DB_FILE, "wb") as f:
+                f.write(yedek_dosya.getbuffer())
+            st.success("Veritabanı başarıyla yüklendi!")
+            st.rerun()
 
 st.title("📈 Netsis Tahsilat ve Cari Takip Sistemi")
 
@@ -104,58 +97,63 @@ with tab1:
     if uploaded_file is not None:
         if st.button("Verileri Aktar ve Listeyi Yenile", type="primary"):
             df = pd.read_excel(uploaded_file)
-            st.session_state.ana_liste = []
-            s_kod, s_isim, s_tel, s_bakiye = "Cari Kod", "Cari İsim", "Telefon", "Borç Bak."
+            
+            conn = get_db_connection()
+            c = conn.cursor()
+            
+            # Eski ana listeyi temizle
+            c.execute("DELETE FROM ana_liste")
+            
+            # Takipteki kodları al (onları ana listeye eklememek için)
+            c.execute("SELECT kod FROM takip")
+            takipteki_kodlar = [row[0] for row in c.fetchall()]
             
             sayac = 0
             for index, row in df.iterrows():
-                c_isim = str(row.get(s_isim, ""))
-                if pd.isna(row.get(s_isim)) or not c_isim.strip(): continue
-                c_kod = str(row.get(s_kod, "-"))
-                if c_kod in st.session_state.takip: continue
-                c_tel = str(row.get(s_tel, "")) if pd.notna(row.get(s_tel)) else ""
-                bakiye_val = row.get(s_bakiye, 0.0) if pd.notna(row.get(s_bakiye)) else 0.0
+                c_isim = str(row.get("Cari İsim", ""))
+                if pd.isna(row.get("Cari İsim")) or not c_isim.strip(): continue
                 
-                satir = {
-                    "Seç": False,
-                    "Cari Kod": c_kod,
-                    "Cari İsim": c_isim,
-                    "Telefon": c_tel,
-                    "Bakiye": bakiye_formatla(bakiye_val)
-                }
-                st.session_state.ana_liste.append(satir)
+                c_kod = str(row.get("Cari Kod", "-"))
+                if c_kod in takipteki_kodlar: continue
+                
+                c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
+                bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
+                
+                c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)", 
+                          (c_kod, c_isim, c_tel, bakiye_val))
                 sayac += 1
                 
-            ana_liste_kaydet()
+            conn.commit()
+            conn.close()
             st.success(f"{sayac} adet cari başarıyla yüklendi.")
             st.rerun()
 
     st.markdown("---")
-    col1, col2, col3 = st.columns(3)
-    min_b = col1.number_input("Min Bakiye (TL)", value=0.0)
-    max_b = col2.number_input("Max Bakiye (TL)", value=9999999.0)
-    arama = col3.text_input("Cari İsim veya Kod Ara").lower()
+    conn = get_db_connection()
+    df_ana = pd.read_sql_query("SELECT * FROM ana_liste", conn)
+    conn.close()
     
-    if st.session_state.ana_liste:
-        df_ana = pd.DataFrame(st.session_state.ana_liste)
-        # Sıralama hatasını çözmek için Bakiyeyi geçici olarak float'a çeviriyoruz
-        df_ana["Bakiye_Float"] = df_ana["Bakiye"].apply(bakiye_temizle)
+    if not df_ana.empty:
+        col1, col2, col3 = st.columns(3)
+        min_b = col1.number_input("Min Bakiye (TL)", value=0.0)
+        max_b = col2.number_input("Max Bakiye (TL)", value=9999999.0)
+        arama = col3.text_input("Cari İsim veya Kod Ara").lower()
         
-        mask = (df_ana["Bakiye_Float"] >= min_b) & (df_ana["Bakiye_Float"] <= max_b)
-        if arama: mask = mask & (df_ana["Cari İsim"].str.lower().str.contains(arama) | df_ana["Cari Kod"].str.lower().str.contains(arama))
+        mask = (df_ana["bakiye"] >= min_b) & (df_ana["bakiye"] <= max_b)
+        if arama: 
+            mask = mask & (df_ana["isim"].str.lower().str.contains(arama) | df_ana["kod"].str.lower().str.contains(arama))
         
         df_gosterim = df_ana[mask].copy()
-        # Gösterimde Bakiyeyi sayısal tutuyoruz ki doğru sıralansın
-        df_gosterim["Bakiye"] = df_gosterim["Bakiye_Float"]
-        df_gosterim = df_gosterim.drop(columns=["Bakiye_Float"])
+        # Görsellik için sütun isimlerini düzelt
+        df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", "bakiye": "Bakiye"}, inplace=True)
+        df_gosterim.insert(0, "Seç", False)
         
-        st.write("💡 *İpucu: Bir hücreyi kopyalamak için üzerine tıklayıp Ctrl+C yapabilirsiniz. Bakiye sütununa basarak sayısal sıralama yapabilirsiniz.*")
         edited_df = st.data_editor(
             df_gosterim,
             hide_index=True,
             column_config={
                 "Seç": st.column_config.CheckboxColumn("Seç", default=False),
-                "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f") # Sayısal format sütunu
+                "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f")
             },
             disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye"],
             use_container_width=True,
@@ -164,94 +162,39 @@ with tab1:
         
         secilenler = edited_df[edited_df["Seç"] == True]
         if st.button("Seçilenleri Takibe Aktar ➔", type="primary") and not secilenler.empty:
-            kalan_liste = []
-            for item in st.session_state.ana_liste:
-                if item["Cari Kod"] in secilenler["Cari Kod"].values:
-                    st.session_state.takip[item["Cari Kod"]] = {
-                        "Cari İsim": item["Cari İsim"],
-                        "Telefon": item["Telefon"],
-                        "Bakiye": item["Bakiye"],
-                        "Durum": "Beklemede",
-                        "Özel Durum": "",
-                        "Tarih": "",
-                        "Not": ""
-                    }
-                else: kalan_liste.append(item)
-                    
-            st.session_state.ana_liste = kalan_liste
-            verileri_kaydet()
-            ana_liste_kaydet()
+            conn = get_db_connection()
+            c = conn.cursor()
+            for index, row in secilenler.iterrows():
+                kod = row["Cari Kod"]
+                # Takibe ekle
+                c.execute("INSERT OR REPLACE INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                          (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"], "Beklemede", "", ""))
+                # Ana listeden sil
+                c.execute("DELETE FROM ana_liste WHERE kod=?", (kod,))
+                
+                # İlk log kaydını at
+                ilk_log = f"Sistem: Cari takibe alındı. (Bakiye: {row['Bakiye']} TL)"
+                zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
+                c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (?, ?, ?)", (kod, zaman, ilk_log))
+                
+            conn.commit()
+            conn.close()
             st.success("Seçilen cariler takibe aktarıldı!")
             st.rerun()
 
 # ==========================================
-# 2. SEKME: TAHSİLAT TAKİP
+# 2. SEKME: TAHSİLAT TAKİP VE LOG SİSTEMİ
 # ==========================================
 with tab2:
-    with st.expander("➕ Manuel Cari Ekle (Excel Dışı)"):
-        with st.form("manuel_ekle_form", clear_on_submit=True):
-            col_m1, col_m2 = st.columns(2)
-            yeni_isim = col_m1.text_input("Cari İsim *")
-            yeni_bakiye = col_m2.number_input("Bakiye (TL)", min_value=0.0, step=100.0)
-            
-            col_m3, col_m4 = st.columns(2)
-            yeni_tel = col_m3.text_input("Telefon")
-            yeni_kod = col_m4.text_input("Cari Kod (Boş bırakırsanız otomatik atanır)")
-            
-            submit_manuel = st.form_submit_button("Listeye Ekle")
-            if submit_manuel:
-                if not yeni_isim.strip():
-                    st.error("Cari İsim girmek zorunludur!")
-                else:
-                    if not yeni_kod.strip():
-                        yeni_kod = f"MANUEL-{int(time.time())}"
-                    
-                    if yeni_kod in st.session_state.takip:
-                        st.error("Bu Cari Kod zaten takip listesinde var.")
-                    else:
-                        st.session_state.takip[yeni_kod] = {
-                            "Cari İsim": yeni_isim.strip(),
-                            "Telefon": yeni_tel.strip(),
-                            "Bakiye": bakiye_formatla(yeni_bakiye),
-                            "Durum": "Beklemede",
-                            "Özel Durum": "",
-                            "Tarih": "",
-                            "Not": ""
-                        }
-                        verileri_kaydet()
-                        st.success(f"'{yeni_isim}' listeye eklendi!")
-                        st.rerun()
-
-    st.markdown("---")
-
-    if st.session_state.takip and isinstance(st.session_state.takip, dict):
-        takip_listesi = []
-        toplam_bakiye = 0.0
-        odenen_bakiye = 0.0
-        bekleyen_sayisi = 0
+    conn = get_db_connection()
+    df_takip = pd.read_sql_query("SELECT * FROM takip", conn)
+    
+    if not df_takip.empty:
+        toplam_bakiye = df_takip['bakiye'].sum()
+        odenen_bakiye = df_takip[df_takip['durum'] == 'Ödedi']['bakiye'].sum()
+        bekleyen_sayisi = len(df_takip[df_takip['durum'] == 'Beklemede'])
         
-        for kod, veri in st.session_state.takip.items():
-            bakiye_sayi = bakiye_temizle(veri.get("Bakiye", "0"))
-            durum = veri.get("Durum", "Beklemede")
-            
-            toplam_bakiye += bakiye_sayi
-            if durum == "Ödedi": odenen_bakiye += bakiye_sayi
-            if durum == "Beklemede": bekleyen_sayisi += 1
-            
-            takip_listesi.append({
-                "Seç": False,
-                "Cari Kod": kod,
-                "Cari İsim": veri.get("Cari İsim", ""),
-                "Telefon": veri.get("Telefon", ""),
-                "Bakiye": bakiye_sayi, # Sayısal olarak listeye alıyoruz
-                "Durum": durum,
-                "Özel Durum": str(veri.get("Özel Durum", "")),
-                "Tarih": tarih_cozumle(veri.get("Tarih", "")),
-                "Not": str(veri.get("Not", ""))
-            })
-            
-        df_takip = pd.DataFrame(takip_listesi)
-        
+        # DASHBOARD
         st.markdown("### 📊 Genel Durum Özeti")
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Takipteki Cari Sayısı", len(df_takip))
@@ -264,81 +207,122 @@ with tab2:
         durumlar = ["Tümü", "Beklemede", "Arandı", "Ödedi", "Dönmedi"]
         secili_durum = col_f1.selectbox("Durum Filtresi", durumlar)
         
-        temiz_ozeller = [str(x) for x in df_takip["Özel Durum"].unique() if pd.notna(x) and str(x).strip() != ""]
+        temiz_ozeller = [str(x) for x in df_takip["ozel_durum"].unique() if x]
         ozel_durumlar = ["Tümü"] + sorted(temiz_ozeller)
         secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ozel_durumlar)
         
-        if secili_durum != "Tümü": df_takip = df_takip[df_takip["Durum"] == secili_durum]
-        if secili_ozel != "Tümü": df_takip = df_takip[df_takip["Özel Durum"].fillna("").astype(str) == secili_ozel]
+        df_gosterim = df_takip.copy()
+        if secili_durum != "Tümü": df_gosterim = df_gosterim[df_gosterim["durum"] == secili_durum]
+        if secili_ozel != "Tümü": df_gosterim = df_gosterim[df_gosterim["ozel_durum"] == secili_ozel]
         
-        st.info("✏️ **Durum, Özel Durum, Tarih ve Not** hücrelerine çift tıklayıp değiştirdikten sonra **Tab (Sekme) veya Enter tuşuna basmanız** kaydetmek için yeterlidir.")
+        df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", 
+                                    "bakiye": "Bakiye", "durum": "Durum", "ozel_durum": "Özel Durum", "tarih": "Tarih"}, inplace=True)
+        df_gosterim.insert(0, "Seç", False)
         
+        # Tarihleri objeye çevir
+        df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
+        
+        st.info("Hızlı Güncelleme: Durum, Özel Durum ve Tarih hücrelerini tablodan direkt değiştirebilirsiniz.")
         edited_takip = st.data_editor(
-            df_takip,
+            df_gosterim,
             hide_index=True,
             column_config={
-                "Seç": st.column_config.CheckboxColumn("Silmek İçin Seç", default=False),
+                "Seç": st.column_config.CheckboxColumn("Sil", default=False),
                 "Durum": st.column_config.SelectboxColumn("Durum", options=["Beklemede", "Arandı", "Ödedi", "Dönmedi"]),
                 "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY"),
-                "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f") # Sayısal olarak listeliyoruz
+                "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f")
             },
             disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye"],
             use_container_width=True,
-            height=500
+            height=350
         )
         
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_takip.drop(columns=["Seç"]).to_excel(writer, index=False, sheet_name='Tahsilat_Listesi')
-        st.download_button(label="📄 Güncel Listeyi Excel Olarak İndir", data=output.getvalue(), file_name="Tahsilat_Takip_Raporu.xlsx", mime="application/vnd.ms-excel")
-        
-        degisiklik_var = False
+        # Tablodaki hızlı güncellemeleri DB'ye yaz
+        degisiklik_yapildi = False
+        c = conn.cursor()
         for index, row in edited_takip.iterrows():
             kod = row["Cari Kod"]
-            eski = st.session_state.takip.get(kod, {})
-            eski_tarih_str = eski.get("Tarih", "")
+            orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
             
-            yeni_tarih_obj = row["Tarih"]
-            if pd.isna(yeni_tarih_obj) or yeni_tarih_obj is None:
-                yeni_tarih_str = ""
-            else:
-                try: yeni_tarih_str = yeni_tarih_obj.strftime("%d.%m.%Y")
-                except AttributeError: yeni_tarih_str = str(yeni_tarih_obj)
+            yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
+            yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
             
-            if (eski.get("Durum", "Beklemede") != row["Durum"] or 
-                eski.get("Özel Durum", "") != row["Özel Durum"] or 
-                eski_tarih_str != yeni_tarih_str or 
-                eski.get("Not", "") != row["Not"]):
+            if (orj_row["durum"] != row["Durum"] or 
+                orj_row["ozel_durum"] != yeni_ozel or 
+                orj_row["tarih"] != yeni_tarih):
                 
-                st.session_state.takip[kod]["Durum"] = row["Durum"]
-                st.session_state.takip[kod]["Özel Durum"] = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
-                st.session_state.takip[kod]["Tarih"] = yeni_tarih_str
-                st.session_state.takip[kod]["Not"] = str(row["Not"]) if pd.notna(row["Not"]) else ""
-                degisiklik_var = True
+                c.execute("UPDATE takip SET durum=?, ozel_durum=?, tarih=? WHERE kod=?", 
+                          (row["Durum"], yeni_ozel, yeni_tarih, kod))
+                degisiklik_yapildi = True
                 
-        if degisiklik_var: 
-            verileri_kaydet()
-            st.toast("✅ Değişiklikler otomatik olarak kaydedildi!", icon="💾")
-            
+        if degisiklik_yapildi:
+            conn.commit()
+            st.toast("✅ Tablo güncellemeleri veritabanına kaydedildi!", icon="💾")
+            time.sleep(1)
+            st.rerun()
+
+        # TOPLU SİLME
         silinecekler = edited_takip[edited_takip["Seç"] == True]
         if st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar"):
-            if not silinecekler.empty:
-                for index, row in silinecekler.iterrows():
-                    kod = row["Cari Kod"]
-                    mevcut_kodlar = [item["Cari Kod"] for item in st.session_state.ana_liste]
+            for index, row in silinecekler.iterrows():
+                kod = row["Cari Kod"]
+                if not kod.startswith("MANUEL-"):
+                    c.execute("INSERT OR REPLACE INTO ana_liste (kod, isim, telefon, bakiye) VALUES (?, ?, ?, ?)",
+                              (kod, row["Cari İsim"], row["Telefon"], row["Bakiye"]))
+                c.execute("DELETE FROM takip WHERE kod=?", (kod,))
+                c.execute("DELETE FROM loglar WHERE cari_kod=?", (kod,)) # Logları da temizle
+            conn.commit()
+            st.success("Seçilen cariler takipten çıkarıldı.")
+            st.rerun()
+
+        st.markdown("---")
+        
+        # ==========================================
+        # LOG SİSTEMİ (GÖRÜŞME GEÇMİŞİ)
+        # ==========================================
+        st.markdown("### 📝 Cari Detay ve Görüşme Geçmişi")
+        
+        # Seçim kutusu için carileri listele (İsim - Kod şeklinde)
+        cari_liste = df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
+        secilen_cari_str = st.selectbox("Görüşme detaylarını görmek için bir cari seçin:", cari_liste)
+        
+        if secilen_cari_str:
+            # Seçilen carinin kodunu ayıkla
+            secilen_kod = secilen_cari_str.split("(")[-1].replace(")", "")
+            cari_detay = df_takip[df_takip['kod'] == secilen_kod].iloc[0]
+            
+            log_col1, log_col2 = st.columns([1, 2])
+            
+            # Sol taraf: Yeni Not Ekleme
+            with log_col1:
+                st.info(f"**Bakiye:** {cari_detay['bakiye']:,.2f} TL\n\n**Telefon:** {cari_detay['telefon']}")
+                with st.form(key=f"form_{secilen_kod}", clear_on_submit=True):
+                    yeni_not = st.text_area("Bu cari için yeni bir görüşme notu ekleyin:", height=100)
+                    if st.form_submit_button("Notu Veritabanına Kaydet"):
+                        if yeni_not.strip():
+                            zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
+                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (?, ?, ?)", 
+                                      (secilen_kod, zaman, yeni_not.strip()))
+                            conn.commit()
+                            st.success("Not başarıyla eklendi!")
+                            st.rerun()
+                        else:
+                            st.warning("Lütfen boş bir not kaydetmeyin.")
+            
+            # Sağ taraf: Geçmiş Logların Listelenmesi
+            with log_col2:
+                st.markdown(f"**{cari_detay['isim']} - Geçmiş Görüşmeler**")
+                df_log = pd.read_sql_query("SELECT tarih_saat, not_metni FROM loglar WHERE cari_kod=? ORDER BY id DESC", conn, params=(secilen_kod,))
+                
+                if not df_log.empty:
+                    for index, row in df_log.iterrows():
+                        st.markdown(f"🗓️ **{row['tarih_saat']}**")
+                        st.markdown(f"> {row['not_metni']}")
+                        st.divider()
+                else:
+                    st.write("Bu cari için henüz bir görüşme notu bulunmuyor.")
                     
-                    if not kod.startswith("MANUEL-"):
-                        if kod not in mevcut_kodlar:
-                            st.session_state.ana_liste.append({
-                                "Seç": False, "Cari Kod": kod, "Cari İsim": row["Cari İsim"],
-                                "Telefon": row["Telefon"], "Bakiye": bakiye_formatla(row["Bakiye"])
-                            })
-                    if kod in st.session_state.takip:
-                        del st.session_state.takip[kod]
-                verileri_kaydet()
-                ana_liste_kaydet()
-                st.success("Seçilen cariler takipten çıkarıldı.")
-                st.rerun()
-            else: st.warning("Lütfen silmek için tablodan seçim yapın.")
     else:
-        st.info("Takip listeniz şu an boş. Ana ekrandan cari aktarabilirsiniz veya manuel ekleyebilirsiniz.")
+        st.info("Takip listeniz şu an boş. Ana ekrandan cari aktarabilirsiniz.")
+        
+    conn.close()
