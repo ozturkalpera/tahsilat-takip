@@ -14,7 +14,6 @@ st.set_page_config(page_title="Tahsilat ve Cari Takip", page_icon="📈", layout
 # BULUT VERİTABANI BAĞLANTI AYARLARI
 # ==========================================
 try:
-    # Supabase linkini al ve güvenlik sertifikasını (sslmode) otomatik ekle
     DB_URL = st.secrets["DB_URL"]
     if "sslmode=require" not in DB_URL:
         separator = "&" if "?" in DB_URL else "?"
@@ -122,7 +121,11 @@ with tab1:
                 c_isim = str(row.get("Cari İsim", ""))
                 if pd.isna(row.get("Cari İsim")) or not c_isim.strip(): continue
                 
-                c_kod = str(row.get("Cari Kod", "-"))
+                # Cari Kod boşsa veya NaN ise, benzersiz bir geçici kod üret
+                c_kod = str(row.get("Cari Kod", "")).strip()
+                if c_kod == "nan" or c_kod == "-" or not c_kod:
+                    c_kod = f"KODSUZ-{index}-{int(time.time())}"
+                
                 bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
                 
                 if c_kod in takipteki_kodlar:
@@ -131,7 +134,13 @@ with tab1:
                     continue
                 
                 c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
-                c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)", (c_kod, c_isim, c_tel, bakiye_val))
+                
+                # AYNI KODDAN İKİ TANE VARSA ÇÖKMESİN DİYE ON CONFLICT KURALI EKLENDİ
+                c.execute("""
+                    INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (kod) DO UPDATE SET 
+                    isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
+                """, (c_kod, c_isim, c_tel, bakiye_val))
                 sayac += 1
                 
             conn.commit()
@@ -302,7 +311,7 @@ with tab2:
         if st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar"):
             for index, row in silinecekler.iterrows():
                 kod = row["Cari Kod"]
-                if not kod.startswith("MANUEL-"):
+                if not kod.startswith("MANUEL-") and not kod.startswith("KODSUZ-"):
                     c.execute("""
                         INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
                         ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
