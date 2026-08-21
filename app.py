@@ -11,41 +11,22 @@ import plotly.express as px
 st.set_page_config(page_title="Tahsilat ve Cari Takip", page_icon="📈", layout="wide")
 
 # ==========================================
-# 1. ŞİFRELİ GİRİŞ SİSTEMİ (LOGIN)
+# BULUT VERİTABANI BAĞLANTI AYARLARI
 # ==========================================
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.session_state["password_correct"] = False
-
-    def password_entered():
-        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"] # Güvenlik için şifreyi hafızadan sil
-        else:
-            st.session_state["password_correct"] = False
-
-    if not st.session_state["password_correct"]:
-        st.markdown("<h2 style='text-align: center;'>🔒 Sistem Girişi</h2>", unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.info("Bu uygulamaya erişmek için yetkili şifresi gereklidir.")
-            st.text_input("Lütfen Şifrenizi Girin:", type="password", on_change=password_entered, key="password")
-            if "password_correct" in st.session_state and st.session_state["password_correct"] == False:
-                st.error("❌ Hatalı şifre! Lütfen tekrar deneyin.")
-        return False
-    return True
-
-# Şifre doğru değilse aşağıya geçme ve programı burada durdur
-if not check_password():
+try:
+    # Supabase linkini al ve güvenlik sertifikasını (sslmode) otomatik ekle
+    DB_URL = st.secrets["DB_URL"]
+    if "sslmode=require" not in DB_URL:
+        separator = "&" if "?" in DB_URL else "?"
+        DB_URL += f"{separator}sslmode=require"
+except Exception as e:
+    st.error("Bağlantı linki bulunamadı. Lütfen Streamlit Cloud 'Secrets' bölümüne DB_URL'i eklediğinizden emin olun.")
     st.stop()
 
-# ==========================================
-# 2. BULUT VERİTABANI (POSTGRESQL) İŞLEMLERİ
-# ==========================================
 @st.cache_resource
 def init_db():
     try:
-        conn = psycopg2.connect(st.secrets["DB_URL"])
+        conn = psycopg2.connect(DB_URL)
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS takip (
                         kod TEXT PRIMARY KEY, 
@@ -72,12 +53,12 @@ def init_db():
         c.close()
         conn.close()
     except Exception as e:
-        st.error(f"Veritabanı bağlantı hatası. Lütfen Secrets ayarlarını kontrol edin. Detay: {e}")
+        st.error(f"Veritabanı oluşturulamadı. Detay: {e}")
 
 init_db()
 
 def get_db_connection():
-    return psycopg2.connect(st.secrets["DB_URL"])
+    return psycopg2.connect(DB_URL)
 
 # --- YARDIMCI FONKSİYONLAR ---
 def bakiye_temizle(deger):
@@ -111,10 +92,7 @@ def whatsapp_link_olustur(telefon, isim, bakiye):
 with st.sidebar:
     st.header("⚙️ Sistem Durumu")
     st.success("🟢 Canlı Bulut Veritabanına Bağlı")
-    st.write("Verileriniz anlık olarak buluta kaydedilmektedir. Manuel yedeğe gerek yoktur.")
-    if st.button("🚪 Güvenli Çıkış Yap (Log Out)"):
-        st.session_state["password_correct"] = False
-        st.rerun()
+    st.write("Verileriniz anlık olarak buluta kaydedilmektedir. Uygulamadan güvenle çıkabilirsiniz.")
 
 st.title("📈 Netsis Tahsilat ve Cari Takip Sistemi")
 
@@ -176,7 +154,6 @@ with tab1:
         max_b = col2.number_input("Max Bakiye (TL)", value=9999999.0)
         arama = col3.text_input("Cari İsim veya Kod Ara").lower()
         
-        # Bakiye tipini numerik hale getirip filtreliyoruz
         df_ana["bakiye"] = pd.to_numeric(df_ana["bakiye"], errors='coerce')
         mask = (df_ana["bakiye"] >= min_b) & (df_ana["bakiye"] <= max_b)
         if arama: mask = mask & (df_ana["isim"].str.lower().str.contains(arama) | df_ana["kod"].str.lower().str.contains(arama))
@@ -203,7 +180,6 @@ with tab1:
             c = conn.cursor()
             for index, row in secilenler.iterrows():
                 kod = row["Cari Kod"]
-                # ON CONFLICT PostgreSQL kuralıdır
                 c.execute("""
                     INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
                     VALUES (%s, %s, %s, %s, %s, %s, %s) 
