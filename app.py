@@ -187,7 +187,6 @@ with tab1:
                 conn = get_db_connection()
                 c = conn.cursor()
                 for index, row in secilenler.iterrows():
-                    # Veri Tiplerini Güvence Altına Alma (HATA ÇÖZÜMÜ BURADA)
                     kod = str(row["Cari Kod"])
                     isim = str(row["Cari İsim"])
                     telefon = str(row["Telefon"])
@@ -209,7 +208,7 @@ with tab1:
                 c.close()
                 conn.close()
                 st.success("Seçilen cariler takibe aktarıldı!")
-                time.sleep(1) # Kullanıcının başarı mesajını görebilmesi için minik bir bekleme
+                time.sleep(1)
                 st.rerun()
             except Exception as e:
                 st.error(f"Aktarım sırasında bir hata oluştu: {e}")
@@ -281,12 +280,14 @@ with tab2:
         df_gosterim.insert(0, "Seç", False)
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
-        st.info("Hızlı Güncelleme: Durum, Özel Durum ve Tarih hücrelerini tablodan direkt değiştirebilirsiniz.")
+        st.info("💡 **Görüşme Geçmişini Görmek İçin:** Bir carinin yanındaki kutucuğu işaretlediğinizde detay paneli hemen aşağıda açılır.")
+        
+        # TABLO BÖLÜMÜ
         edited_takip = st.data_editor(
             df_gosterim,
             hide_index=True,
             column_config={
-                "Seç": st.column_config.CheckboxColumn("Sil", default=False),
+                "Seç": st.column_config.CheckboxColumn("Seç / İncele", default=False),
                 "Durum": st.column_config.SelectboxColumn("Durum", options=["Beklemede", "Arandı", "Ödedi", "Dönmedi"]),
                 "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY"),
                 "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f"),
@@ -297,6 +298,10 @@ with tab2:
             height=350
         )
         
+        # Tablodan seçilen satırları yakala
+        secili_satirlar = edited_takip[edited_takip["Seç"] == True]
+        
+        # Hücre güncellemelerini buluta kaydet (Durum, Özel durum vb.)
         degisiklik_yapildi = False
         c = conn.cursor()
         for index, row in edited_takip.iterrows():
@@ -316,50 +321,68 @@ with tab2:
             time.sleep(1)
             st.rerun()
 
-        silinecekler = edited_takip[edited_takip["Seç"] == True]
+        # Toplu Çıkarma İşlemi
         if st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar"):
-            try:
-                for index, row in silinecekler.iterrows():
-                    kod = str(row["Cari Kod"])
-                    isim = str(row["Cari İsim"])
-                    telefon = str(row["Telefon"])
-                    bakiye = float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0
-                    
-                    if not kod.startswith("MANUEL-") and not kod.startswith("KODSUZ-"):
-                        c.execute("""
-                            INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
-                        """, (kod, isim, telefon, bakiye))
-                    c.execute("DELETE FROM takip WHERE kod=%s", (kod,))
-                    c.execute("DELETE FROM loglar WHERE cari_kod=%s", (kod,)) 
-                conn.commit()
-                st.success("Seçilen cariler takipten çıkarıldı.")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Çıkarma işlemi sırasında bir hata oluştu: {e}")
+            if not secili_satirlar.empty:
+                try:
+                    for index, row in secili_satirlar.iterrows():
+                        kod = str(row["Cari Kod"])
+                        isim = str(row["Cari İsim"])
+                        telefon = str(row["Telefon"])
+                        bakiye = float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0
+                        
+                        if not kod.startswith("MANUEL-") and not kod.startswith("KODSUZ-"):
+                            c.execute("""
+                                INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
+                                ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
+                            """, (kod, isim, telefon, bakiye))
+                        c.execute("DELETE FROM takip WHERE kod=%s", (kod,))
+                        c.execute("DELETE FROM loglar WHERE cari_kod=%s", (kod,)) 
+                    conn.commit()
+                    st.success("Seçilen cariler takipten çıkarıldı.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Çıkarma işlemi sırasında bir hata oluştu: {e}")
+            else:
+                st.warning("Lütfen takipten çıkarmak için tablodan seçim yapın.")
             
         c.close()
 
         st.markdown("---")
         st.markdown("### 📝 Cari Detay ve Görüşme Geçmişi")
-        cari_liste = df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
-        secilen_cari_str = st.selectbox("Görüşme detaylarını görmek için bir cari seçin:", cari_liste)
         
-        if secilen_cari_str:
-            secilen_kod = secilen_cari_str.split("(")[-1].replace(")", "")
-            cari_detay = df_takip[df_takip['kod'] == secilen_kod].iloc[0]
+        # --- YENİ AKILLI LOG SEÇİM SİSTEMİ ---
+        aktif_cari_kod = None
+        
+        # 1. Eğer tablodan sadece 1 kişi seçildiyse doğrudan onun kodunu al
+        if len(secili_satirlar) == 1:
+            aktif_cari_kod = str(secili_satirlar.iloc[0]["Cari Kod"])
+            st.success(f"👆 Tablodan **{secili_satirlar.iloc[0]['Cari İsim']}** seçildi. İşlem yapabilirsiniz.")
+        # 2. Eğer birden fazla seçildiyse uyarı ver
+        elif len(secili_satirlar) > 1:
+            st.warning("⚠️ Görüşme detaylarını görmek ve not eklemek için tablodan sadece **BİR** kişinin kutucuğunu işaretleyin.")
+        # 3. Hiçbiri seçilmediyse manuel arama çubuğunu göster
+        else:
+            cari_liste = ["-- Lütfen tablodan bir cari işaretleyin veya buradan ismini arayın --"] + df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
+            secilen_cari_str = st.selectbox("Manuel Arama (İsteğe Bağlı):", cari_liste)
+            if secilen_cari_str != "-- Lütfen tablodan bir cari işaretleyin veya buradan ismini arayın --":
+                aktif_cari_kod = secilen_cari_str.split("(")[-1].replace(")", "")
+        
+        # Aktif cari kodu belirlendiyse detay panelini aç
+        if aktif_cari_kod:
+            cari_detay = df_takip[df_takip['kod'] == aktif_cari_kod].iloc[0]
             log_col1, log_col2 = st.columns([1, 2])
             
             with log_col1:
                 st.info(f"**Bakiye:** {float(cari_detay['bakiye']):,.2f} TL\n\n**Telefon:** {cari_detay['telefon']}")
-                with st.form(key=f"form_{secilen_kod}", clear_on_submit=True):
+                with st.form(key=f"form_{aktif_cari_kod}", clear_on_submit=True):
                     yeni_not = st.text_area("Bu cari için yeni bir görüşme notu ekleyin:", height=100)
                     if st.form_submit_button("Notu Buluta Kaydet"):
                         if yeni_not.strip():
                             zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
                             c = conn.cursor()
-                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (secilen_kod, zaman, yeni_not.strip()))
+                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (aktif_cari_kod, zaman, yeni_not.strip()))
                             conn.commit()
                             c.close()
                             st.success("Not başarıyla eklendi!")
@@ -368,7 +391,7 @@ with tab2:
             
             with log_col2:
                 st.markdown(f"**{cari_detay['isim']} - Geçmiş Görüşmeler**")
-                df_log = pd.read_sql_query(f"SELECT tarih_saat, not_metni FROM loglar WHERE cari_kod='{secilen_kod}' ORDER BY id DESC", conn)
+                df_log = pd.read_sql_query(f"SELECT tarih_saat, not_metni FROM loglar WHERE cari_kod='{aktif_cari_kod}' ORDER BY id DESC", conn)
                 if not df_log.empty:
                     for index, row in df_log.iterrows():
                         st.markdown(f"🗓️ **{row['tarih_saat']}**")
