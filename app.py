@@ -121,8 +121,7 @@ with tab1:
                     "Cari Kod": c_kod,
                     "Cari İsim": c_isim,
                     "Telefon": c_tel,
-                    "Bakiye": bakiye_formatla(bakiye_val),
-                    "_Bakiye_Num": bakiye_temizle(bakiye_val)
+                    "Bakiye": bakiye_formatla(bakiye_val)
                 }
                 st.session_state.ana_liste.append(satir)
                 sayac += 1
@@ -139,16 +138,25 @@ with tab1:
     
     if st.session_state.ana_liste:
         df_ana = pd.DataFrame(st.session_state.ana_liste)
-        mask = (df_ana["_Bakiye_Num"] >= min_b) & (df_ana["_Bakiye_Num"] <= max_b)
+        # Sıralama hatasını çözmek için Bakiyeyi geçici olarak float'a çeviriyoruz
+        df_ana["Bakiye_Float"] = df_ana["Bakiye"].apply(bakiye_temizle)
+        
+        mask = (df_ana["Bakiye_Float"] >= min_b) & (df_ana["Bakiye_Float"] <= max_b)
         if arama: mask = mask & (df_ana["Cari İsim"].str.lower().str.contains(arama) | df_ana["Cari Kod"].str.lower().str.contains(arama))
         
-        df_gosterim = df_ana[mask].drop(columns=["_Bakiye_Num"])
+        df_gosterim = df_ana[mask].copy()
+        # Gösterimde Bakiyeyi sayısal tutuyoruz ki doğru sıralansın
+        df_gosterim["Bakiye"] = df_gosterim["Bakiye_Float"]
+        df_gosterim = df_gosterim.drop(columns=["Bakiye_Float"])
         
-        st.write("💡 *İpucu: Bir hücreyi kopyalamak için üzerine tıklayıp Ctrl+C yapabilirsiniz.*")
+        st.write("💡 *İpucu: Bir hücreyi kopyalamak için üzerine tıklayıp Ctrl+C yapabilirsiniz. Bakiye sütununa basarak sayısal sıralama yapabilirsiniz.*")
         edited_df = st.data_editor(
             df_gosterim,
             hide_index=True,
-            column_config={"Seç": st.column_config.CheckboxColumn("Seç", default=False)},
+            column_config={
+                "Seç": st.column_config.CheckboxColumn("Seç", default=False),
+                "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f") # Sayısal format sütunu
+            },
             disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye"],
             use_container_width=True,
             height=400
@@ -235,9 +243,9 @@ with tab2:
                 "Cari Kod": kod,
                 "Cari İsim": veri.get("Cari İsim", ""),
                 "Telefon": veri.get("Telefon", ""),
-                "Bakiye": veri.get("Bakiye", ""),
+                "Bakiye": bakiye_sayi, # Sayısal olarak listeye alıyoruz
                 "Durum": durum,
-                "Özel Durum": str(veri.get("Özel Durum", "")), # Güvence altına alındı
+                "Özel Durum": str(veri.get("Özel Durum", "")),
                 "Tarih": tarih_cozumle(veri.get("Tarih", "")),
                 "Not": str(veri.get("Not", ""))
             })
@@ -256,7 +264,6 @@ with tab2:
         durumlar = ["Tümü", "Beklemede", "Arandı", "Ödedi", "Dönmedi"]
         secili_durum = col_f1.selectbox("Durum Filtresi", durumlar)
         
-        # --- HATA DÜZELTİLDİ: Null ve Boşluklar güvenle temizleniyor ---
         temiz_ozeller = [str(x) for x in df_takip["Özel Durum"].unique() if pd.notna(x) and str(x).strip() != ""]
         ozel_durumlar = ["Tümü"] + sorted(temiz_ozeller)
         secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ozel_durumlar)
@@ -273,6 +280,7 @@ with tab2:
                 "Seç": st.column_config.CheckboxColumn("Silmek İçin Seç", default=False),
                 "Durum": st.column_config.SelectboxColumn("Durum", options=["Beklemede", "Arandı", "Ödedi", "Dönmedi"]),
                 "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY"),
+                "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f") # Sayısal olarak listeliyoruz
             },
             disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye"],
             use_container_width=True,
@@ -323,8 +331,7 @@ with tab2:
                         if kod not in mevcut_kodlar:
                             st.session_state.ana_liste.append({
                                 "Seç": False, "Cari Kod": kod, "Cari İsim": row["Cari İsim"],
-                                "Telefon": row["Telefon"], "Bakiye": row["Bakiye"],
-                                "_Bakiye_Num": bakiye_temizle(row["Bakiye"])
+                                "Telefon": row["Telefon"], "Bakiye": bakiye_formatla(row["Bakiye"])
                             })
                     if kod in st.session_state.takip:
                         del st.session_state.takip[kod]
