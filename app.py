@@ -26,15 +26,11 @@ def bakiye_formatla(deger):
         return str(deger)
 
 def tarih_cozumle(tarih_str):
-    """Metin halindeki tarihi Streamlit'in takvimi için datetime objesine çevirir."""
     if not tarih_str: return None
-    try:
-        return pd.to_datetime(tarih_str, format="%d.%m.%Y").date()
+    try: return pd.to_datetime(tarih_str, format="%d.%m.%Y").date()
     except:
-        try:
-            return pd.to_datetime(tarih_str).date()
-        except:
-            return None
+        try: return pd.to_datetime(tarih_str).date()
+        except: return None
 
 # --- GÜVENLİ VERİ YÜKLEME ---
 def verileri_yukle():
@@ -65,7 +61,6 @@ def ana_liste_kaydet():
         with open(ANA_LISTE_DOSYASI, 'w', encoding='utf-8') as f:
             json.dump(st.session_state.ana_liste, f, ensure_ascii=False, indent=4)
 
-# Hafıza başlatma
 if 'takip' not in st.session_state or not isinstance(st.session_state.takip, dict): 
     st.session_state.takip = verileri_yukle()
 if 'ana_liste' not in st.session_state or not isinstance(st.session_state.ana_liste, list): 
@@ -93,7 +88,7 @@ with st.sidebar:
                     st.success("Yedek başarıyla yüklendi!")
                     st.rerun()
                 else:
-                    st.error("Hata: Yüklediğiniz dosya geçerli bir Takip yedeği değil!")
+                    st.error("Hata: Geçersiz dosya formatı.")
             except Exception as e:
                 st.error("Dosya okunurken bir hata oluştu.")
 
@@ -187,7 +182,6 @@ with tab1:
 # 2. SEKME: TAHSİLAT TAKİP
 # ==========================================
 with tab2:
-    # --- MANUEL CARİ EKLEME ---
     with st.expander("➕ Manuel Cari Ekle (Excel Dışı)"):
         with st.form("manuel_ekle_form", clear_on_submit=True):
             col_m1, col_m2 = st.columns(2)
@@ -207,7 +201,7 @@ with tab2:
                         yeni_kod = f"MANUEL-{int(time.time())}"
                     
                     if yeni_kod in st.session_state.takip:
-                        st.error("Bu Cari Kod zaten takip listesinde var. Farklı bir kod girin.")
+                        st.error("Bu Cari Kod zaten takip listesinde var.")
                     else:
                         st.session_state.takip[yeni_kod] = {
                             "Cari İsim": yeni_isim.strip(),
@@ -219,7 +213,7 @@ with tab2:
                             "Not": ""
                         }
                         verileri_kaydet()
-                        st.success(f"'{yeni_isim}' başarıyla listeye eklendi!")
+                        st.success(f"'{yeni_isim}' listeye eklendi!")
                         st.rerun()
 
     st.markdown("---")
@@ -246,13 +240,12 @@ with tab2:
                 "Bakiye": veri.get("Bakiye", ""),
                 "Durum": durum,
                 "Özel Durum": veri.get("Özel Durum", ""),
-                "Tarih": tarih_cozumle(veri.get("Tarih", "")), # TAKVİM İÇİN EKLENDİ
+                "Tarih": tarih_cozumle(veri.get("Tarih", "")),
                 "Not": veri.get("Not", "")
             })
             
         df_takip = pd.DataFrame(takip_listesi)
         
-        # DASHBOARD (Bilgi Kartları)
         st.markdown("### 📊 Genel Durum Özeti")
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Takipteki Cari Sayısı", len(df_takip))
@@ -271,7 +264,7 @@ with tab2:
         if secili_durum != "Tümü": df_takip = df_takip[df_takip["Durum"] == secili_durum]
         if secili_ozel != "Tümü": df_takip = df_takip[df_takip["Özel Durum"] == secili_ozel]
         
-        st.info("📅 **Tarih** hücresine çift tıkladığınızda otomatik olarak takvim açılacaktır.")
+        st.info("✏️ **Durum, Özel Durum, Tarih ve Not** hücrelerine çift tıklayıp değiştirdikten sonra **Tab (Sekme) veya Enter tuşuna basmanız** kaydetmek için yeterlidir.")
         
         edited_takip = st.data_editor(
             df_takip,
@@ -279,27 +272,25 @@ with tab2:
             column_config={
                 "Seç": st.column_config.CheckboxColumn("Silmek İçin Seç", default=False),
                 "Durum": st.column_config.SelectboxColumn("Durum", options=["Beklemede", "Arandı", "Ödedi", "Dönmedi"]),
-                "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY"), # TAKVİM YAPILANDIRMASI
+                "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY"),
             },
             disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye"],
             use_container_width=True,
             height=500
         )
         
-        # Excel İndirme Butonu
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_takip.drop(columns=["Seç"]).to_excel(writer, index=False, sheet_name='Tahsilat_Listesi')
         st.download_button(label="📄 Güncel Listeyi Excel Olarak İndir", data=output.getvalue(), file_name="Tahsilat_Takip_Raporu.xlsx", mime="application/vnd.ms-excel")
         
-        # Kaydetme Mekanizması
+        # --- TAB VE ENTER'A BASILDIĞINDA OTOMATİK KAYIT İŞLEMİ ---
         degisiklik_var = False
         for index, row in edited_takip.iterrows():
             kod = row["Cari Kod"]
             eski = st.session_state.takip.get(kod, {})
             eski_tarih_str = eski.get("Tarih", "")
             
-            # Takvimden gelen değeri metne (String) dönüştür
             yeni_tarih_obj = row["Tarih"]
             if pd.isna(yeni_tarih_obj) or yeni_tarih_obj is None:
                 yeni_tarih_str = ""
@@ -318,7 +309,11 @@ with tab2:
                 st.session_state.takip[kod]["Not"] = row["Not"]
                 degisiklik_var = True
                 
-        if degisiklik_var: verileri_kaydet()
+        # EĞER BİR HÜCRE DEĞİŞTİRİLİP TAB'A VEYA ENTER'A BASILDIYSA:
+        if degisiklik_var: 
+            verileri_kaydet()
+            # YENİ EKLENEN GÖRSEL BİLDİRİM
+            st.toast("✅ Değişiklikler otomatik olarak kaydedildi!", icon="💾")
             
         silinecekler = edited_takip[edited_takip["Seç"] == True]
         if st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar"):
@@ -327,7 +322,6 @@ with tab2:
                     kod = row["Cari Kod"]
                     mevcut_kodlar = [item["Cari Kod"] for item in st.session_state.ana_liste]
                     
-                    # Eğer otomatik oluşturulan "MANUEL" kodlu birisiyse ana ekrana atma, direkt sil
                     if not kod.startswith("MANUEL-"):
                         if kod not in mevcut_kodlar:
                             st.session_state.ana_liste.append({
