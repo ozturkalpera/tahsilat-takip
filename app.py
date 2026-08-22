@@ -229,7 +229,6 @@ with tab2:
                 if m_isim.strip():
                     if not m_kod.strip():
                         m_kod = f"MANUEL-{int(time.time())}"
-                    
                     try:
                         conn = get_db_connection()
                         c = conn.cursor()
@@ -241,10 +240,8 @@ with tab2:
                                 INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
                                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """, (m_kod, m_isim, m_tel, m_bakiye, "Beklemede", "Manuel Eklendi", ""))
-                            
                             zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
                             c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (m_kod, zaman, f"Sistem: Manuel olarak eklendi. (Bakiye: {m_bakiye:,.2f} TL)"))
-                            
                             conn.commit()
                             st.success(f"'{m_isim}' başarıyla takip listesine eklendi!")
                             time.sleep(1)
@@ -293,13 +290,10 @@ with tab2:
         m4.metric("Kalan Alacak", f"{(df_takip['bakiye'].sum() - df_takip[df_takip['durum'] == 'Ödedi']['bakiye'].sum()):,.2f} TL")
         st.markdown("---")
         
-        # YENİ: İSİM FİLTRELEME EKLENDİ (3 Kolon yapıldı)
         col_f1, col_f2, col_f3 = st.columns(3)
         secili_durum = col_f1.selectbox("Durum Filtresi", ["Tümü", "Beklemede", "Arandı", "Ödedi", "Dönmedi"])
-        
         temiz_ozeller = [str(x) for x in df_takip["ozel_durum"].unique() if x]
         secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ["Tümü"] + sorted(temiz_ozeller))
-        
         tum_isimler = sorted(df_takip["isim"].dropna().unique().tolist())
         secili_isimler = col_f3.multiselect("Cari İsim (Excel Tarzı Filtre)", options=tum_isimler, placeholder="İsim Seçin...")
         
@@ -313,7 +307,7 @@ with tab2:
         df_gosterim.insert(0, "Seç", False)
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
-        st.info("💡 **Görüşme Geçmişini Görmek İçin:** Bir carinin yanındaki kutucuğu işaretlediğinizde detay paneli hemen aşağıda açılır.")
+        st.info("💡 **Hızlı Düzenleme:** Tablodan istediğiniz kadar değişikliği hızlıca yapın, ardından aşağıdaki **'Kaydet'** butonuna basın.")
         
         edited_takip = st.data_editor(
             df_gosterim, hide_index=True,
@@ -330,26 +324,40 @@ with tab2:
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
         
-        degisiklik_yapildi = False
-        c = conn.cursor()
-        for index, row in edited_takip.iterrows():
-            kod = str(row["Cari Kod"])
-            orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
-            yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
-            yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
-            
-            if (orj_row["durum"] != str(row["Durum"]) or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
-                c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (str(row["Durum"]), yeni_ozel, yeni_tarih, kod))
-                degisiklik_yapildi = True
+        # MANUEL KAYDETME VE SİLME BUTONLARI
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            kaydet_basildi = st.button("💾 Yaptığım Tüm Değişiklikleri Kaydet", type="primary", use_container_width=True)
+        with col_btn2:
+            sil_basildi = st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar", use_container_width=True)
+        
+        # KAYDET İŞLEMİ
+        if kaydet_basildi:
+            degisiklik_yapildi = False
+            c = conn.cursor()
+            for index, row in edited_takip.iterrows():
+                kod = str(row["Cari Kod"])
+                orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
+                yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
+                yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
                 
-        if degisiklik_yapildi:
-            conn.commit()
-            st.toast("✅ Tablo güncellemeleri buluta kaydedildi!", icon="☁️")
-            time.sleep(1)
-            st.rerun()
+                if (orj_row["durum"] != str(row["Durum"]) or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
+                    c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (str(row["Durum"]), yeni_ozel, yeni_tarih, kod))
+                    degisiklik_yapildi = True
+                    
+            if degisiklik_yapildi:
+                conn.commit()
+                st.success("✅ Tablodaki tüm güncellemeler tek seferde buluta kaydedildi!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.info("Herhangi bir değişiklik bulunamadı.")
+            c.close()
 
-        if st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar"):
+        # SİLME / ÇIKARMA İŞLEMİ
+        if sil_basildi:
             if not secili_satirlar.empty:
+                c = conn.cursor()
                 for index, row in secili_satirlar.iterrows():
                     kod = str(row["Cari Kod"])
                     if not kod.startswith("MANUEL-") and not kod.startswith("KODSUZ-"):
@@ -358,12 +366,12 @@ with tab2:
                     c.execute("DELETE FROM takip WHERE kod=%s", (kod,))
                     c.execute("DELETE FROM loglar WHERE cari_kod=%s", (kod,)) 
                 conn.commit()
+                c.close()
                 st.success("Seçilen cariler takipten çıkarıldı.")
                 time.sleep(1)
                 st.rerun()
-            else: st.warning("Lütfen takipten çıkarmak için tablodan seçim yapın.")
-            
-        c.close()
+            else: 
+                st.warning("Lütfen takipten çıkarmak için tablodan birilerini seçin.")
 
         st.markdown("---")
         aktif_cari_kod = None
@@ -485,11 +493,10 @@ with tab4:
         df_gorev.rename(columns={"gorev_adi": "Görev Adı", "tarih": "Tarih", "durum": "Durum", "notlar": "Notlar"}, inplace=True)
         df_gorev["Tarih"] = pd.to_datetime(df_gorev["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
-        st.write("💡 **İpucu:** Görevlerin durumunu ve tarihini direkt tablodan değiştirebilirsiniz.")
+        st.info("💡 **Hızlı Düzenleme:** Görevlerde yaptığınız değişiklikleri topluca kaydetmek için aşağıdaki butonu kullanın.")
         
         edited_gorev = st.data_editor(
-            df_gorev,
-            hide_index=True,
+            df_gorev, hide_index=True,
             column_config={
                 "id": None, 
                 "Seç": st.column_config.CheckboxColumn("Silmek İçin Seç", default=False),
@@ -497,42 +504,53 @@ with tab4:
                 "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY")
             },
             disabled=["Görev Adı"],
-            use_container_width=True,
-            height=300
+            use_container_width=True, height=300
         )
         
-        degisiklik_gorev = False
-        c = conn.cursor()
-        for index, row in edited_gorev.iterrows():
-            g_id = row["id"]
-            orj_row = df_gorev[df_gorev["id"] == g_id].iloc[0]
-            
-            y_durum = str(row["Durum"])
-            y_not = str(row["Notlar"]) if pd.notna(row["Notlar"]) else ""
-            y_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
-            
-            if (orj_row["Durum"] != y_durum or str(orj_row["Notlar"]) != y_not or orj_row["Tarih"] != row["Tarih"]):
-                c.execute("UPDATE gorevler SET durum=%s, notlar=%s, tarih=%s WHERE id=%s", (y_durum, y_not, y_tarih, g_id))
-                degisiklik_gorev = True
-                
-        if degisiklik_gorev:
-            conn.commit()
-            st.toast("✅ Görev güncellemeleri kaydedildi!", icon="💾")
-            time.sleep(1)
-            st.rerun()
-            
         silinecek_gorevler = edited_gorev[edited_gorev["Seç"] == True]
-        if st.button("❌ Seçilen Görevleri Sil"):
+        
+        # GÖREV YÖNETİCİSİ MANUEL KAYDET/SİL BUTONLARI
+        col_gbtn1, col_gbtn2 = st.columns(2)
+        with col_gbtn1:
+            kaydet_g_basildi = st.button("💾 Görev Değişikliklerini Kaydet", type="primary", use_container_width=True)
+        with col_gbtn2:
+            sil_g_basildi = st.button("❌ Seçilen Görevleri Sil", use_container_width=True)
+            
+        if kaydet_g_basildi:
+            degisiklik_gorev = False
+            c = conn.cursor()
+            for index, row in edited_gorev.iterrows():
+                g_id = row["id"]
+                orj_row = df_gorev[df_gorev["id"] == g_id].iloc[0]
+                y_durum = str(row["Durum"])
+                y_not = str(row["Notlar"]) if pd.notna(row["Notlar"]) else ""
+                y_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
+                
+                if (orj_row["Durum"] != y_durum or str(orj_row["Notlar"]) != y_not or orj_row["Tarih"] != row["Tarih"]):
+                    c.execute("UPDATE gorevler SET durum=%s, notlar=%s, tarih=%s WHERE id=%s", (y_durum, y_not, y_tarih, g_id))
+                    degisiklik_gorev = True
+                    
+            if degisiklik_gorev:
+                conn.commit()
+                st.success("✅ Tüm görev güncellemeleri tek seferde kaydedildi!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.info("Değiştirilmiş bir görev bulunamadı.")
+            c.close()
+
+        if sil_g_basildi:
             if not silinecek_gorevler.empty:
+                c = conn.cursor()
                 for index, row in silinecek_gorevler.iterrows():
                     c.execute("DELETE FROM gorevler WHERE id=%s", (row["id"],))
                 conn.commit()
+                c.close()
                 st.success("Seçilen görevler başarıyla silindi.")
                 time.sleep(1)
                 st.rerun()
             else:
-                st.warning("Lütfen silmek için bir görev seçin.")
-        c.close()
+                st.warning("Lütfen silmek için tablodan bir görev seçin.")
     else:
         st.info("Harika! Bekleyen veya tamamlanmış hiçbir göreviniz yok.")
     conn.close()
