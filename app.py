@@ -307,7 +307,7 @@ with tab2:
         df_gosterim.insert(0, "Seç", False)
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
-        st.info("💡 **Hızlı Düzenleme:** Tablodan istediğiniz kadar değişikliği hızlıca yapın, ardından aşağıdaki **'Kaydet'** butonuna basın.")
+        st.info("💡 **Hızlı Düzenleme:** Tablodan istediğiniz kadar değişikliği hızlıca yapın, ardından aşağıdaki butona basıp kaydedin.")
         
         edited_takip = st.data_editor(
             df_gosterim, hide_index=True,
@@ -324,16 +324,30 @@ with tab2:
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
         
-        # MANUEL KAYDETME VE SİLME BUTONLARI
+        # --- YENİ: DEĞİŞİKLİK KONTROL MOTORU (TAHSİLAT) ---
+        degisiklik_var_mi = False
+        for index, row in edited_takip.iterrows():
+            kod = str(row["Cari Kod"])
+            orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
+            yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
+            yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
+            
+            if (orj_row["durum"] != str(row["Durum"]) or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
+                degisiklik_var_mi = True
+                break
+        
+        # AKILLI BUTONLAR EKRANA BASILIYOR
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            kaydet_basildi = st.button("💾 Yaptığım Tüm Değişiklikleri Kaydet", type="primary", use_container_width=True)
+            btn_label = "🔴 Değişiklikler Var! Tıkla ve Kaydet" if degisiklik_var_mi else "🟢 Tüm Veriler Güncel (Değişiklik Yok)"
+            btn_type = "primary" if degisiklik_var_mi else "secondary"
+            # Eğer değişiklik yoksa butonu gri (pasif) yapar, basılamaz.
+            kaydet_basildi = st.button(btn_label, type=btn_type, disabled=not degisiklik_var_mi, use_container_width=True, key="btn_cari_kaydet")
+            
         with col_btn2:
-            sil_basildi = st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar", use_container_width=True)
+            sil_basildi = st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar", use_container_width=True, key="btn_cari_sil")
         
-        # KAYDET İŞLEMİ
         if kaydet_basildi:
-            degisiklik_yapildi = False
             c = conn.cursor()
             for index, row in edited_takip.iterrows():
                 kod = str(row["Cari Kod"])
@@ -343,18 +357,12 @@ with tab2:
                 
                 if (orj_row["durum"] != str(row["Durum"]) or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
                     c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (str(row["Durum"]), yeni_ozel, yeni_tarih, kod))
-                    degisiklik_yapildi = True
-                    
-            if degisiklik_yapildi:
-                conn.commit()
-                st.success("✅ Tablodaki tüm güncellemeler tek seferde buluta kaydedildi!")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.info("Herhangi bir değişiklik bulunamadı.")
+            conn.commit()
             c.close()
+            st.success("✅ Tablodaki tüm güncellemeler tek seferde buluta kaydedildi!")
+            time.sleep(1)
+            st.rerun()
 
-        # SİLME / ÇIKARMA İŞLEMİ
         if sil_basildi:
             if not secili_satirlar.empty:
                 c = conn.cursor()
@@ -493,7 +501,7 @@ with tab4:
         df_gorev.rename(columns={"gorev_adi": "Görev Adı", "tarih": "Tarih", "durum": "Durum", "notlar": "Notlar"}, inplace=True)
         df_gorev["Tarih"] = pd.to_datetime(df_gorev["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
-        st.info("💡 **Hızlı Düzenleme:** Görevlerde yaptığınız değişiklikleri topluca kaydetmek için aşağıdaki butonu kullanın.")
+        st.info("💡 **Hızlı Düzenleme:** Tabloda değişiklik yaptığınızda Kaydet butonu aktif (Kırmızı) olacaktır.")
         
         edited_gorev = st.data_editor(
             df_gorev, hide_index=True,
@@ -509,15 +517,29 @@ with tab4:
         
         silinecek_gorevler = edited_gorev[edited_gorev["Seç"] == True]
         
-        # GÖREV YÖNETİCİSİ MANUEL KAYDET/SİL BUTONLARI
+        # --- YENİ: DEĞİŞİKLİK KONTROL MOTORU (GÖREVLER) ---
+        degisiklik_gorev_var = False
+        for index, row in edited_gorev.iterrows():
+            g_id = row["id"]
+            orj_row = df_gorev[df_gorev["id"] == g_id].iloc[0]
+            y_durum = str(row["Durum"])
+            y_not = str(row["Notlar"]) if pd.notna(row["Notlar"]) else ""
+            y_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
+            
+            if (orj_row["Durum"] != y_durum or str(orj_row["Notlar"]) != y_not or orj_row["Tarih"] != row["Tarih"]):
+                degisiklik_gorev_var = True
+                break
+        
         col_gbtn1, col_gbtn2 = st.columns(2)
         with col_gbtn1:
-            kaydet_g_basildi = st.button("💾 Görev Değişikliklerini Kaydet", type="primary", use_container_width=True)
+            g_lbl = "🔴 Görevlerde Değişiklik Var! Tıkla ve Kaydet" if degisiklik_gorev_var else "🟢 Tüm Görevler Güncel (Değişiklik Yok)"
+            g_type = "primary" if degisiklik_gorev_var else "secondary"
+            kaydet_g_basildi = st.button(g_lbl, type=g_type, disabled=not degisiklik_gorev_var, use_container_width=True, key="btn_gorev_kaydet")
+            
         with col_gbtn2:
-            sil_g_basildi = st.button("❌ Seçilen Görevleri Sil", use_container_width=True)
+            sil_g_basildi = st.button("❌ Seçilen Görevleri Sil", use_container_width=True, key="btn_gorev_sil")
             
         if kaydet_g_basildi:
-            degisiklik_gorev = False
             c = conn.cursor()
             for index, row in edited_gorev.iterrows():
                 g_id = row["id"]
@@ -528,16 +550,11 @@ with tab4:
                 
                 if (orj_row["Durum"] != y_durum or str(orj_row["Notlar"]) != y_not or orj_row["Tarih"] != row["Tarih"]):
                     c.execute("UPDATE gorevler SET durum=%s, notlar=%s, tarih=%s WHERE id=%s", (y_durum, y_not, y_tarih, g_id))
-                    degisiklik_gorev = True
-                    
-            if degisiklik_gorev:
-                conn.commit()
-                st.success("✅ Tüm görev güncellemeleri tek seferde kaydedildi!")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.info("Değiştirilmiş bir görev bulunamadı.")
+            conn.commit()
             c.close()
+            st.success("✅ Tüm görev güncellemeleri tek seferde kaydedildi!")
+            time.sleep(1)
+            st.rerun()
 
         if sil_g_basildi:
             if not silinecek_gorevler.empty:
