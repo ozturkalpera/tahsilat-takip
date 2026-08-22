@@ -27,7 +27,6 @@ def init_db():
     try:
         conn = psycopg2.connect(DB_URL)
         c = conn.cursor()
-        # Tahsilat tabloları
         c.execute('''CREATE TABLE IF NOT EXISTS takip (
                         kod TEXT PRIMARY KEY, 
                         isim TEXT, 
@@ -49,7 +48,6 @@ def init_db():
                         telefon TEXT, 
                         bakiye NUMERIC
                     )''')
-        # YENİ: Görev Yöneticisi Tablosu
         c.execute('''CREATE TABLE IF NOT EXISTS gorevler (
                         id SERIAL PRIMARY KEY, 
                         gorev_adi TEXT, 
@@ -99,7 +97,6 @@ with st.sidebar:
 
 st.title("📈 Netsis Tahsilat ve Cari Takip Sistemi")
 
-# 4. SEKME EKLENDİ (GÖREV YÖNETİCİSİ)
 tab1, tab2, tab3, tab4 = st.tabs([
     "📋 Tüm Cariler (Ana Ekran)", 
     "🔍 Tahsilat Takip Sayfası", 
@@ -218,7 +215,6 @@ with tab1:
 # 2. SEKME: TAHSİLAT TAKİP VE LOG
 # ==========================================
 with tab2:
-    # --- MANUEL CARİ EKLEME ALANI ---
     with st.expander("➕ Manuel Cari Ekle (Excel'de Olmayanlar İçin)", expanded=False):
         with st.form("manuel_cari_form", clear_on_submit=True):
             col_m1, col_m2 = st.columns(2)
@@ -297,13 +293,20 @@ with tab2:
         m4.metric("Kalan Alacak", f"{(df_takip['bakiye'].sum() - df_takip[df_takip['durum'] == 'Ödedi']['bakiye'].sum()):,.2f} TL")
         st.markdown("---")
         
-        col_f1, col_f2 = st.columns(2)
+        # YENİ: İSİM FİLTRELEME EKLENDİ (3 Kolon yapıldı)
+        col_f1, col_f2, col_f3 = st.columns(3)
         secili_durum = col_f1.selectbox("Durum Filtresi", ["Tümü", "Beklemede", "Arandı", "Ödedi", "Dönmedi"])
-        secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ["Tümü"] + sorted([str(x) for x in df_takip["ozel_durum"].unique() if x]))
+        
+        temiz_ozeller = [str(x) for x in df_takip["ozel_durum"].unique() if x]
+        secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ["Tümü"] + sorted(temiz_ozeller))
+        
+        tum_isimler = sorted(df_takip["isim"].dropna().unique().tolist())
+        secili_isimler = col_f3.multiselect("Cari İsim (Excel Tarzı Filtre)", options=tum_isimler, placeholder="İsim Seçin...")
         
         df_gosterim = df_takip.copy()
         if secili_durum != "Tümü": df_gosterim = df_gosterim[df_gosterim["durum"] == secili_durum]
         if secili_ozel != "Tümü": df_gosterim = df_gosterim[df_gosterim["ozel_durum"] == secili_ozel]
+        if secili_isimler: df_gosterim = df_gosterim[df_gosterim["isim"].isin(secili_isimler)]
         
         df_gosterim["WhatsApp"] = df_gosterim.apply(lambda r: whatsapp_link_olustur(r['telefon'], r['isim'], r['bakiye']), axis=1)
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", "bakiye": "Bakiye", "durum": "Durum", "ozel_durum": "Özel Durum", "tarih": "Tarih"}, inplace=True)
@@ -445,12 +448,11 @@ with tab3:
     else: st.info("Rapor oluşturulabilmesi için Takip listenize veri eklemelisiniz.")
 
 # ==========================================
-# 4. SEKME: GÖREV YÖNETİCİSİ (YENİ)
+# 4. SEKME: GÖREV YÖNETİCİSİ
 # ==========================================
 with tab4:
     st.markdown("### ✅ Günlük İşler ve Görev Yöneticisi")
     
-    # 1. Yeni Görev Ekleme Formu
     with st.expander("➕ Yeni Görev Ekle", expanded=True):
         with st.form("yeni_gorev_form", clear_on_submit=True):
             g_col1, g_col2 = st.columns(2)
@@ -475,16 +477,12 @@ with tab4:
                     st.error("Lütfen bir görev adı girin!")
 
     st.markdown("---")
-    
-    # 2. Görevleri Listeleme ve Düzenleme Tablosu
     conn = get_db_connection()
     df_gorev = pd.read_sql_query("SELECT id, gorev_adi, tarih, durum, notlar FROM gorevler ORDER BY id DESC", conn)
     
     if not df_gorev.empty:
         df_gorev.insert(0, "Seç", False)
         df_gorev.rename(columns={"gorev_adi": "Görev Adı", "tarih": "Tarih", "durum": "Durum", "notlar": "Notlar"}, inplace=True)
-        
-        # Tarih formatını Streamlit Data Editor için uyarla
         df_gorev["Tarih"] = pd.to_datetime(df_gorev["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
         st.write("💡 **İpucu:** Görevlerin durumunu ve tarihini direkt tablodan değiştirebilirsiniz.")
@@ -493,7 +491,7 @@ with tab4:
             df_gorev,
             hide_index=True,
             column_config={
-                "id": None, # ID sütununu gizliyoruz ama arka planda kullanacağız
+                "id": None, 
                 "Seç": st.column_config.CheckboxColumn("Silmek İçin Seç", default=False),
                 "Durum": st.column_config.SelectboxColumn("Durum", options=["Bekliyor", "Devam Ediyor", "Tamamlandı", "İptal"]),
                 "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY")
@@ -503,7 +501,6 @@ with tab4:
             height=300
         )
         
-        # Görev Hücre Güncellemeleri
         degisiklik_gorev = False
         c = conn.cursor()
         for index, row in edited_gorev.iterrows():
@@ -524,7 +521,6 @@ with tab4:
             time.sleep(1)
             st.rerun()
             
-        # Toplu Görev Silme
         silinecek_gorevler = edited_gorev[edited_gorev["Seç"] == True]
         if st.button("❌ Seçilen Görevleri Sil"):
             if not silinecek_gorevler.empty:
@@ -536,9 +532,7 @@ with tab4:
                 st.rerun()
             else:
                 st.warning("Lütfen silmek için bir görev seçin.")
-        
         c.close()
     else:
         st.info("Harika! Bekleyen veya tamamlanmış hiçbir göreviniz yok.")
-    
     conn.close()
