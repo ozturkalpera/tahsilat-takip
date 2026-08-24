@@ -319,7 +319,7 @@ with tab2:
                     elif tarih_obj == bugun: bugun_aranacaklar.append(row)
                 except: pass
                 
-        # --- YENİ: TIKLANABİLİR AKILLI UYARILAR ---
+        # --- TIKLANABİLİR AKILLI UYARILAR ---
         if vadesi_gecen_cariler or bugun_aranacaklar:
             with st.expander("🚨 AKILLI UYARILAR (İlgilenilmesi Gerekenler)", expanded=True):
                 if vadesi_gecen_cariler:
@@ -356,20 +356,42 @@ with tab2:
         arama_takip = col_f3.text_input("Cari İsim Ara 🔍", placeholder="Örn: fatı, Fati...").strip()
         
         df_gosterim = df_takip.copy()
-        if secili_durum != "Tümü": df_gosterim = df_gosterim[df_gosterim["durum"] == secili_durum]
-        if secili_ozel != "Tümü": df_gosterim = df_gosterim[df_gosterim["ozel_durum"] == secili_ozel]
         
-        if arama_takip:
-            a_t = arama_temizle(arama_takip)
-            isim_mask = df_gosterim["isim"].apply(arama_temizle).str.contains(a_t)
-            df_gosterim = df_gosterim[isim_mask]
+        # --- YENİ: TABLOYU İNCELEME MODUNA GÖRE FİLTRELEME ---
+        uyari_modu_aktif = False
+        
+        if st.session_state.get("secili_uyari_kod"):
+            uyari_kod = st.session_state["secili_uyari_kod"]
+            # Eğer seçilen kişi hala listede varsa (silinmediyse)
+            if uyari_kod in df_gosterim["kod"].values:
+                df_gosterim = df_gosterim[df_gosterim["kod"] == uyari_kod]
+                uyari_modu_aktif = True
+                uyari_isim = df_gosterim.iloc[0]["isim"]
+                
+                # Tablonun üstünde Uyarı Barı Çıkar
+                c_u1, c_u2 = st.columns([4, 1])
+                c_u1.success(f"🚨 Şu an **{uyari_isim}** inceleniyor. Tablo sadece bu cariyi gösteriyor.")
+                if c_u2.button("❌ İncelemeyi Kapat", use_container_width=True):
+                    st.session_state["secili_uyari_kod"] = None
+                    st.rerun()
+            else:
+                # Silinmişse uyarı kodunu sıfırla
+                st.session_state["secili_uyari_kod"] = None
+        
+        # Eğer İnceleme Modu aktif değilse normal filtreleri (Durum, Arama vb.) uygula
+        if not uyari_modu_aktif:
+            if secili_durum != "Tümü": df_gosterim = df_gosterim[df_gosterim["durum"] == secili_durum]
+            if secili_ozel != "Tümü": df_gosterim = df_gosterim[df_gosterim["ozel_durum"] == secili_ozel]
+            
+            if arama_takip:
+                a_t = arama_temizle(arama_takip)
+                isim_mask = df_gosterim["isim"].apply(arama_temizle).str.contains(a_t)
+                df_gosterim = df_gosterim[isim_mask]
         
         df_gosterim["WhatsApp"] = df_gosterim.apply(lambda r: whatsapp_link_olustur(r['telefon'], r['isim'], r['bakiye']), axis=1)
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", "bakiye": "Bakiye", "durum": "Durum", "ozel_durum": "Özel Durum", "tarih": "Tarih"}, inplace=True)
         df_gosterim.insert(0, "Seç", False)
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
-        
-        st.info("💡 **Hızlı Düzenleme:** Tablodan istediğiniz kadar değişikliği hızlıca yapın, ardından aşağıdaki butona basıp kaydedin.")
         
         edited_takip = st.data_editor(
             df_gosterim, hide_index=True,
@@ -385,10 +407,6 @@ with tab2:
         )
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
-        
-        # Eğer kullanıcı tablodan kutucuk işaretlerse veya filtre atarsa, uyarı tıklamasını sıfırla
-        if len(secili_satirlar) > 0 or len(df_gosterim) == 1:
-            st.session_state["secili_uyari_kod"] = None
         
         degisiklik_var_mi = False
         for index, row in edited_takip.iterrows():
@@ -463,23 +481,15 @@ with tab2:
         elif len(secili_satirlar) > 1:
             st.warning("⚠️ Görüşme detaylarını görmek için tablodan sadece **BİR** kişinin kutucuğunu işaretleyin.")
         elif len(df_gosterim) == 1:
+            # İster manuel aramadan dolayı 1 kişi kalsın, ister uyarı butonundan İncele densin
+            # Tabloda tek bir satır varsa otomatik olarak detayı açılır.
             aktif_cari_kod = str(df_gosterim.iloc[0]["Cari Kod"])
-        elif st.session_state["secili_uyari_kod"]:
-            aktif_cari_kod = st.session_state["secili_uyari_kod"]
-            if aktif_cari_kod in df_takip["kod"].values:
-                isim_uyari = df_takip[df_takip["kod"] == aktif_cari_kod].iloc[0]["isim"]
-                col_u1, col_u2 = st.columns([4, 1])
-                col_u1.success(f"🚨 Akıllı Uyarılardan **{isim_uyari}** inceleniyor.")
-                if col_u2.button("❌ İncelemeyi Kapat", use_container_width=True):
-                    st.session_state["secili_uyari_kod"] = None
-                    st.rerun()
         else:
             cari_liste = ["-- Lütfen tablodan bir cari işaretleyin veya arama yapın --"] + df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
             secilen_cari_str = st.selectbox("Manuel Cari Seçimi (İsteğe Bağlı):", cari_liste)
             if secilen_cari_str != "-- Lütfen tablodan bir cari işaretleyin veya arama yapın --":
                 aktif_cari_kod = secilen_cari_str.split("(")[-1].replace(")", "")
         
-        # Eğer aktif bir cari varsa paneli aç
         if aktif_cari_kod and aktif_cari_kod in df_takip['kod'].values:
             cari_detay = df_takip[df_takip['kod'] == aktif_cari_kod].iloc[0]
             log_col1, log_col2 = st.columns([1, 2])
