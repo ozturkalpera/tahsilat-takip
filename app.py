@@ -87,13 +87,11 @@ def whatsapp_link_olustur(telefon, isim, bakiye):
     mesaj_kodlu = urllib.parse.quote(mesaj)
     return f"https://wa.me/{temiz_tel}?text={mesaj_kodlu}"
 
-# --- TAKVİM DOSYASI (.ICS) OLUŞTURUCU ---
 def create_ics_file(baslik, aciklama, tarih_str):
     try:
         dt = datetime.strptime(tarih_str, "%d.%m.%Y")
         dt_start = dt.strftime("%Y%m%dT090000")
         dt_end = dt.strftime("%Y%m%dT093000")
-        
         ics_icerik = f"""BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Tahsilat Sistemi//TR
@@ -112,6 +110,22 @@ END:VCALENDAR"""
         return ics_icerik
     except:
         return None
+
+# --- YENİ: KUSURSUZ TÜRKÇE ARAMA MOTORU ---
+def arama_temizle(deger):
+    """Büyük/Küçük harf, İ/I, Ş, Ç gibi farkları ortadan kaldırarak metni sadeleştirir."""
+    if pd.isna(deger): return ""
+    metin = str(deger)
+    # Önce büyük Türkçe harfleri kendi küçük harflerine çevir
+    degisim = {"I": "ı", "İ": "i", "Ş": "ş", "Ç": "ç", "Ö": "ö", "Ü": "ü", "Ğ": "ğ"}
+    for b, k in degisim.items():
+        metin = metin.replace(b, k)
+    metin = metin.lower()
+    # Sonra arama için hepsini İngilizce karakter tabanına eşitle (fatı -> fati)
+    degisim_fuzzy = {"ı": "i", "ğ": "g", "ü": "u", "ş": "s", "ö": "o", "ç": "c"}
+    for b, k in degisim_fuzzy.items():
+        metin = metin.replace(b, k)
+    return metin.strip()
 
 # ==========================================
 # ANA UYGULAMA ARAYÜZÜ
@@ -186,11 +200,17 @@ with tab1:
         col1, col2, col3 = st.columns(3)
         min_b = col1.number_input("Min Bakiye (TL)", value=0.0)
         max_b = col2.number_input("Max Bakiye (TL)", value=9999999.0)
-        arama = col3.text_input("Cari İsim veya Kod Ara").lower()
+        arama = col3.text_input("Cari İsim veya Kod Ara").strip()
         
         df_ana["bakiye"] = pd.to_numeric(df_ana["bakiye"], errors='coerce')
         mask = (df_ana["bakiye"] >= min_b) & (df_ana["bakiye"] <= max_b)
-        if arama: mask = mask & (df_ana["isim"].str.lower().str.contains(arama) | df_ana["kod"].str.lower().str.contains(arama))
+        
+        # TÜRKÇE KARAKTER DUYARSIZ ARAMA EKLENDİ
+        if arama: 
+            arama_temiz = arama_temizle(arama)
+            isim_mask = df_ana["isim"].apply(arama_temizle).str.contains(arama_temiz)
+            kod_mask = df_ana["kod"].apply(arama_temizle).str.contains(arama_temiz)
+            mask = mask & (isim_mask | kod_mask)
         
         df_gosterim = df_ana[mask].copy()
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", "bakiye": "Bakiye"}, inplace=True)
@@ -320,18 +340,25 @@ with tab2:
         secili_durum = col_f1.selectbox("Durum Filtresi", ["Tümü", "Beklemede", "Arandı", "Ödedi", "Dönmedi"])
         temiz_ozeller = [str(x) for x in df_takip["ozel_durum"].unique() if x]
         secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ["Tümü"] + sorted(temiz_ozeller))
-        tum_isimler = sorted(df_takip["isim"].dropna().unique().tolist())
-        secili_isimler = col_f3.multiselect("Cari İsim (Excel Tarzı Filtre)", options=tum_isimler, placeholder="İsim Seçin...")
+        
+        # YENİ: ARAMA KUTUSU (MULTİSELECT YERİNE, KUSURSUZ ÇALIŞMASI İÇİN TEXT INPUT)
+        arama_takip = col_f3.text_input("Cari İsim Ara 🔍", placeholder="Örn: fatı, Fati...").strip()
         
         df_gosterim = df_takip.copy()
         if secili_durum != "Tümü": df_gosterim = df_gosterim[df_gosterim["durum"] == secili_durum]
         if secili_ozel != "Tümü": df_gosterim = df_gosterim[df_gosterim["ozel_durum"] == secili_ozel]
-        if secili_isimler: df_gosterim = df_gosterim[df_gosterim["isim"].isin(secili_isimler)]
+        
+        if arama_takip:
+            a_t = arama_temizle(arama_takip)
+            isim_mask = df_gosterim["isim"].apply(arama_temizle).str.contains(a_t)
+            df_gosterim = df_gosterim[isim_mask]
         
         df_gosterim["WhatsApp"] = df_gosterim.apply(lambda r: whatsapp_link_olustur(r['telefon'], r['isim'], r['bakiye']), axis=1)
         df_gosterim.rename(columns={"kod": "Cari Kod", "isim": "Cari İsim", "telefon": "Telefon", "bakiye": "Bakiye", "durum": "Durum", "ozel_durum": "Özel Durum", "tarih": "Tarih"}, inplace=True)
         df_gosterim.insert(0, "Seç", False)
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
+        
+        st.info("💡 **Hızlı Düzenleme:** Tablodan istediğiniz kadar değişikliği hızlıca yapın, ardından aşağıdaki butona basıp kaydedin.")
         
         edited_takip = st.data_editor(
             df_gosterim, hide_index=True,
@@ -380,11 +407,9 @@ with tab2:
                 eski_durum = str(orj_row["durum"])
                 yeni_durum = str(row["Durum"])
                 
-                # Değişiklik varsa Güncelle
                 if (eski_durum != yeni_durum or str(orj_row["ozel_durum"]) != yeni_ozel or str(orj_row["tarih"]) != yeni_tarih):
                     c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (yeni_durum, yeni_ozel, yeni_tarih, kod))
                     
-                    # 1. YENİ İSTEK: DURUM DEĞİŞMİŞSE LOGA YAZ
                     if eski_durum != yeni_durum:
                         log_mesaji = f"Sistem: Durum güncellendi ({eski_durum} ➔ {yeni_durum})"
                         c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman_simdi, log_mesaji))
@@ -414,15 +439,21 @@ with tab2:
                 st.warning("Lütfen takipten çıkarmak için tablodan birilerini seçin.")
 
         st.markdown("---")
+        
+        # --- YENİ: OTOMATİK PENCERE AÇMA (FİLTREDE TEK KİŞİ KALIRSA) ---
         aktif_cari_kod = None
         if len(secili_satirlar) == 1:
             aktif_cari_kod = str(secili_satirlar.iloc[0]["Cari Kod"])
         elif len(secili_satirlar) > 1:
             st.warning("⚠️ Görüşme detaylarını görmek için tablodan sadece **BİR** kişinin kutucuğunu işaretleyin.")
+        elif len(df_gosterim) == 1:
+            # Sadece 1 kişi filtrelenmişse doğrudan otomatik aç
+            aktif_cari_kod = str(df_gosterim.iloc[0]["Cari Kod"])
+            st.success(f"👆 Filtreleme sonucu listede sadece **{df_gosterim.iloc[0]['Cari İsim']}** kaldığı için detay paneli otomatik açıldı.")
         else:
-            cari_liste = ["-- Lütfen tablodan bir cari işaretleyin veya buradan ismini arayın --"] + df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
-            secilen_cari_str = st.selectbox("Manuel Arama (İsteğe Bağlı):", cari_liste)
-            if secilen_cari_str != "-- Lütfen tablodan bir cari işaretleyin veya buradan ismini arayın --":
+            cari_liste = ["-- Lütfen tablodan bir cari işaretleyin veya arama yapın --"] + df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
+            secilen_cari_str = st.selectbox("Manuel Cari Seçimi (İsteğe Bağlı):", cari_liste)
+            if secilen_cari_str != "-- Lütfen tablodan bir cari işaretleyin veya arama yapın --":
                 aktif_cari_kod = secilen_cari_str.split("(")[-1].replace(")", "")
         
         if aktif_cari_kod:
@@ -465,7 +496,6 @@ with tab2:
                 st.markdown(f"**Geçmiş Görüşmeler ve Durum Logları**")
                 df_log = pd.read_sql_query(f"SELECT id, tarih_saat, not_metni FROM loglar WHERE cari_kod='{aktif_cari_kod}' ORDER BY id DESC", conn)
                 
-                # 2. YENİ İSTEK: NOTLARI LİSTE DEĞİL, DÜZENLENEBİLİR TABLO (EDİTÖR) OLARAK GÖSTERME
                 if not df_log.empty:
                     df_log.insert(0, "Sil", False)
                     df_log.rename(columns={"tarih_saat": "Tarih / Saat", "not_metni": "Görüşme Notu"}, inplace=True)
