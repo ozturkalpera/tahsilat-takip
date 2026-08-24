@@ -11,6 +11,12 @@ import plotly.express as px
 st.set_page_config(page_title="Tahsilat ve Cari Takip", page_icon="📈", layout="wide")
 
 # ==========================================
+# SESSION STATE (HAFIZA) TANIMLAMALARI
+# ==========================================
+if "secili_uyari_kod" not in st.session_state:
+    st.session_state["secili_uyari_kod"] = None
+
+# ==========================================
 # BULUT VERİTABANI BAĞLANTI AYARLARI
 # ==========================================
 try:
@@ -111,17 +117,13 @@ END:VCALENDAR"""
     except:
         return None
 
-# --- YENİ: KUSURSUZ TÜRKÇE ARAMA MOTORU ---
 def arama_temizle(deger):
-    """Büyük/Küçük harf, İ/I, Ş, Ç gibi farkları ortadan kaldırarak metni sadeleştirir."""
     if pd.isna(deger): return ""
     metin = str(deger)
-    # Önce büyük Türkçe harfleri kendi küçük harflerine çevir
     degisim = {"I": "ı", "İ": "i", "Ş": "ş", "Ç": "ç", "Ö": "ö", "Ü": "ü", "Ğ": "ğ"}
     for b, k in degisim.items():
         metin = metin.replace(b, k)
     metin = metin.lower()
-    # Sonra arama için hepsini İngilizce karakter tabanına eşitle (fatı -> fati)
     degisim_fuzzy = {"ı": "i", "ğ": "g", "ü": "u", "ş": "s", "ö": "o", "ç": "c"}
     for b, k in degisim_fuzzy.items():
         metin = metin.replace(b, k)
@@ -205,7 +207,6 @@ with tab1:
         df_ana["bakiye"] = pd.to_numeric(df_ana["bakiye"], errors='coerce')
         mask = (df_ana["bakiye"] >= min_b) & (df_ana["bakiye"] <= max_b)
         
-        # TÜRKÇE KARAKTER DUYARSIZ ARAMA EKLENDİ
         if arama: 
             arama_temiz = arama_temizle(arama)
             isim_mask = df_ana["isim"].apply(arama_temizle).str.contains(arama_temiz)
@@ -318,14 +319,26 @@ with tab2:
                     elif tarih_obj == bugun: bugun_aranacaklar.append(row)
                 except: pass
                 
+        # --- YENİ: TIKLANABİLİR AKILLI UYARILAR ---
         if vadesi_gecen_cariler or bugun_aranacaklar:
             with st.expander("🚨 AKILLI UYARILAR (İlgilenilmesi Gerekenler)", expanded=True):
                 if vadesi_gecen_cariler:
                     st.error(f"**VADESİ GEÇEN {len(vadesi_gecen_cariler)} CARİ VAR!** (Risk: {sum(float(r['bakiye']) for r in vadesi_gecen_cariler):,.2f} TL)")
-                    for r in vadesi_gecen_cariler: st.write(f"⚠️ {r['isim']} | Tarih: {r['tarih']} | Bakiye: {float(r['bakiye']):,.2f} TL")
+                    for r in vadesi_gecen_cariler: 
+                        w1, w2 = st.columns([5, 1])
+                        w1.write(f"⚠️ **{r['isim']}** | Tarih: {r['tarih']} | Bakiye: {float(r['bakiye']):,.2f} TL")
+                        if w2.button("🔍 İncele", key=f"vade_{r['kod']}", use_container_width=True):
+                            st.session_state["secili_uyari_kod"] = r['kod']
+                            st.rerun()
+                            
                 if bugun_aranacaklar:
                     st.warning(f"**BUGÜN ARANACAK {len(bugun_aranacaklar)} CARİ VAR!** (Beklenti: {sum(float(r['bakiye']) for r in bugun_aranacaklar):,.2f} TL)")
-                    for r in bugun_aranacaklar: st.write(f"📞 {r['isim']} | Bakiye: {float(r['bakiye']):,.2f} TL")
+                    for r in bugun_aranacaklar: 
+                        w1, w2 = st.columns([5, 1])
+                        w1.write(f"📞 **{r['isim']}** | Bakiye: {float(r['bakiye']):,.2f} TL")
+                        if w2.button("🔍 İncele", key=f"bugun_{r['kod']}", use_container_width=True):
+                            st.session_state["secili_uyari_kod"] = r['kod']
+                            st.rerun()
             st.markdown("---")
 
         st.markdown("### 📊 Genel Durum Özeti")
@@ -340,8 +353,6 @@ with tab2:
         secili_durum = col_f1.selectbox("Durum Filtresi", ["Tümü", "Beklemede", "Arandı", "Ödedi", "Dönmedi"])
         temiz_ozeller = [str(x) for x in df_takip["ozel_durum"].unique() if x]
         secili_ozel = col_f2.selectbox("Özel Durum Filtresi", ["Tümü"] + sorted(temiz_ozeller))
-        
-        # YENİ: ARAMA KUTUSU (MULTİSELECT YERİNE, KUSURSUZ ÇALIŞMASI İÇİN TEXT INPUT)
         arama_takip = col_f3.text_input("Cari İsim Ara 🔍", placeholder="Örn: fatı, Fati...").strip()
         
         df_gosterim = df_takip.copy()
@@ -374,6 +385,10 @@ with tab2:
         )
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
+        
+        # Eğer kullanıcı tablodan kutucuk işaretlerse veya filtre atarsa, uyarı tıklamasını sıfırla
+        if len(secili_satirlar) > 0 or len(df_gosterim) == 1:
+            st.session_state["secili_uyari_kod"] = None
         
         degisiklik_var_mi = False
         for index, row in edited_takip.iterrows():
@@ -440,23 +455,32 @@ with tab2:
 
         st.markdown("---")
         
-        # --- YENİ: OTOMATİK PENCERE AÇMA (FİLTREDE TEK KİŞİ KALIRSA) ---
+        # --- CARİ DETAY PANELİ AKILLI AÇILIŞ MANTIĞI ---
         aktif_cari_kod = None
+        
         if len(secili_satirlar) == 1:
             aktif_cari_kod = str(secili_satirlar.iloc[0]["Cari Kod"])
         elif len(secili_satirlar) > 1:
             st.warning("⚠️ Görüşme detaylarını görmek için tablodan sadece **BİR** kişinin kutucuğunu işaretleyin.")
         elif len(df_gosterim) == 1:
-            # Sadece 1 kişi filtrelenmişse doğrudan otomatik aç
             aktif_cari_kod = str(df_gosterim.iloc[0]["Cari Kod"])
-            st.success(f"👆 Filtreleme sonucu listede sadece **{df_gosterim.iloc[0]['Cari İsim']}** kaldığı için detay paneli otomatik açıldı.")
+        elif st.session_state["secili_uyari_kod"]:
+            aktif_cari_kod = st.session_state["secili_uyari_kod"]
+            if aktif_cari_kod in df_takip["kod"].values:
+                isim_uyari = df_takip[df_takip["kod"] == aktif_cari_kod].iloc[0]["isim"]
+                col_u1, col_u2 = st.columns([4, 1])
+                col_u1.success(f"🚨 Akıllı Uyarılardan **{isim_uyari}** inceleniyor.")
+                if col_u2.button("❌ İncelemeyi Kapat", use_container_width=True):
+                    st.session_state["secili_uyari_kod"] = None
+                    st.rerun()
         else:
             cari_liste = ["-- Lütfen tablodan bir cari işaretleyin veya arama yapın --"] + df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
             secilen_cari_str = st.selectbox("Manuel Cari Seçimi (İsteğe Bağlı):", cari_liste)
             if secilen_cari_str != "-- Lütfen tablodan bir cari işaretleyin veya arama yapın --":
                 aktif_cari_kod = secilen_cari_str.split("(")[-1].replace(")", "")
         
-        if aktif_cari_kod:
+        # Eğer aktif bir cari varsa paneli aç
+        if aktif_cari_kod and aktif_cari_kod in df_takip['kod'].values:
             cari_detay = df_takip[df_takip['kod'] == aktif_cari_kod].iloc[0]
             log_col1, log_col2 = st.columns([1, 2])
             with log_col1:
