@@ -87,6 +87,32 @@ def whatsapp_link_olustur(telefon, isim, bakiye):
     mesaj_kodlu = urllib.parse.quote(mesaj)
     return f"https://wa.me/{temiz_tel}?text={mesaj_kodlu}"
 
+# --- TAKVİM DOSYASI (.ICS) OLUŞTURUCU ---
+def create_ics_file(baslik, aciklama, tarih_str):
+    try:
+        dt = datetime.strptime(tarih_str, "%d.%m.%Y")
+        dt_start = dt.strftime("%Y%m%dT090000")
+        dt_end = dt.strftime("%Y%m%dT093000")
+        
+        ics_icerik = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Tahsilat Sistemi//TR
+BEGIN:VEVENT
+SUMMARY:{baslik}
+DESCRIPTION:{aciklama}
+DTSTART:{dt_start}
+DTEND:{dt_end}
+BEGIN:VALARM
+TRIGGER:-PT15M
+ACTION:DISPLAY
+DESCRIPTION:Hatırlatma
+END:VALARM
+END:VEVENT
+END:VCALENDAR"""
+        return ics_icerik
+    except:
+        return None
+
 # ==========================================
 # ANA UYGULAMA ARAYÜZÜ
 # ==========================================
@@ -307,8 +333,6 @@ with tab2:
         df_gosterim.insert(0, "Seç", False)
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
-        st.info("💡 **Hızlı Düzenleme:** Tablodan istediğiniz kadar değişikliği hızlıca yapın, ardından aşağıdaki butona basıp kaydedin.")
-        
         edited_takip = st.data_editor(
             df_gosterim, hide_index=True,
             column_config={
@@ -324,24 +348,22 @@ with tab2:
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
         
-        # --- YENİ: DEĞİŞİKLİK KONTROL MOTORU (TAHSİLAT) ---
         degisiklik_var_mi = False
         for index, row in edited_takip.iterrows():
             kod = str(row["Cari Kod"])
             orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
             yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
             yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
+            yeni_durum = str(row["Durum"])
             
-            if (orj_row["durum"] != str(row["Durum"]) or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
+            if (str(orj_row["durum"]) != yeni_durum or str(orj_row["ozel_durum"]) != yeni_ozel or str(orj_row["tarih"]) != yeni_tarih):
                 degisiklik_var_mi = True
                 break
         
-        # AKILLI BUTONLAR EKRANA BASILIYOR
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             btn_label = "🔴 Değişiklikler Var! Tıkla ve Kaydet" if degisiklik_var_mi else "🟢 Tüm Veriler Güncel (Değişiklik Yok)"
             btn_type = "primary" if degisiklik_var_mi else "secondary"
-            # Eğer değişiklik yoksa butonu gri (pasif) yapar, basılamaz.
             kaydet_basildi = st.button(btn_label, type=btn_type, disabled=not degisiklik_var_mi, use_container_width=True, key="btn_cari_kaydet")
             
         with col_btn2:
@@ -349,14 +371,24 @@ with tab2:
         
         if kaydet_basildi:
             c = conn.cursor()
+            zaman_simdi = datetime.now().strftime("%d.%m.%Y %H:%M")
             for index, row in edited_takip.iterrows():
                 kod = str(row["Cari Kod"])
                 orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
                 yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
                 yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
+                eski_durum = str(orj_row["durum"])
+                yeni_durum = str(row["Durum"])
                 
-                if (orj_row["durum"] != str(row["Durum"]) or orj_row["ozel_durum"] != yeni_ozel or orj_row["tarih"] != yeni_tarih):
-                    c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (str(row["Durum"]), yeni_ozel, yeni_tarih, kod))
+                # Değişiklik varsa Güncelle
+                if (eski_durum != yeni_durum or str(orj_row["ozel_durum"]) != yeni_ozel or str(orj_row["tarih"]) != yeni_tarih):
+                    c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (yeni_durum, yeni_ozel, yeni_tarih, kod))
+                    
+                    # 1. YENİ İSTEK: DURUM DEĞİŞMİŞSE LOGA YAZ
+                    if eski_durum != yeni_durum:
+                        log_mesaji = f"Sistem: Durum güncellendi ({eski_durum} ➔ {yeni_durum})"
+                        c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman_simdi, log_mesaji))
+                        
             conn.commit()
             c.close()
             st.success("✅ Tablodaki tüm güncellemeler tek seferde buluta kaydedildi!")
@@ -398,6 +430,24 @@ with tab2:
             log_col1, log_col2 = st.columns([1, 2])
             with log_col1:
                 st.info(f"**Cari:** {cari_detay['isim']}\n\n**Bakiye:** {float(cari_detay['bakiye']):,.2f} TL\n\n**Telefon:** {cari_detay['telefon']}")
+                
+                st.markdown("📅 **Takvim Hatırlatıcısı**")
+                hatirlatma_tarihi = st.date_input("Hangi gün arayacaksınız?", format="DD.MM.YYYY", key=f"date_{aktif_cari_kod}")
+                if hatirlatma_tarihi:
+                    ics_baslik = f"☎️ {cari_detay['isim']} Tahsilat Araması"
+                    ics_aciklama = f"Bakiye: {float(cari_detay['bakiye']):,.2f} TL\\nTelefon: {cari_detay['telefon']}\\nDurum: {cari_detay['durum']}"
+                    ics_data = create_ics_file(ics_baslik, ics_aciklama, hatirlatma_tarihi.strftime("%d.%m.%Y"))
+                    
+                    if ics_data:
+                        st.download_button(
+                            label="🗓️ iPhone Takvimine Hatırlatıcı Ekle",
+                            data=ics_data,
+                            file_name=f"Tahsilat_{cari_detay['isim'].replace(' ', '_')}.ics",
+                            mime="text/calendar",
+                            use_container_width=True
+                        )
+                st.markdown("---")
+
                 with st.form(key=f"form_{aktif_cari_kod}", clear_on_submit=True):
                     yeni_not = st.text_area("Bu cari için yeni bir görüşme notu ekleyin:", height=100)
                     if st.form_submit_button("Notu Buluta Kaydet"):
@@ -412,14 +462,60 @@ with tab2:
                         else: st.warning("Lütfen boş bir not kaydetmeyin.")
             
             with log_col2:
-                st.markdown(f"**Geçmiş Görüşmeler**")
-                df_log = pd.read_sql_query(f"SELECT tarih_saat, not_metni FROM loglar WHERE cari_kod='{aktif_cari_kod}' ORDER BY id DESC", conn)
+                st.markdown(f"**Geçmiş Görüşmeler ve Durum Logları**")
+                df_log = pd.read_sql_query(f"SELECT id, tarih_saat, not_metni FROM loglar WHERE cari_kod='{aktif_cari_kod}' ORDER BY id DESC", conn)
+                
+                # 2. YENİ İSTEK: NOTLARI LİSTE DEĞİL, DÜZENLENEBİLİR TABLO (EDİTÖR) OLARAK GÖSTERME
                 if not df_log.empty:
-                    for index, row in df_log.iterrows():
-                        st.markdown(f"🗓️ **{row['tarih_saat']}**")
-                        st.markdown(f"> {row['not_metni']}")
-                        st.divider()
-                else: st.write("Bu cari için henüz bir görüşme notu bulunmuyor.")
+                    df_log.insert(0, "Sil", False)
+                    df_log.rename(columns={"tarih_saat": "Tarih / Saat", "not_metni": "Görüşme Notu"}, inplace=True)
+                    
+                    st.caption("Aşağıdaki notların üzerine tıklayarak değiştirebilir veya sol taraftan seçerek silebilirsiniz.")
+                    
+                    edited_log = st.data_editor(
+                        df_log, hide_index=True,
+                        column_config={
+                            "id": None, 
+                            "Sil": st.column_config.CheckboxColumn("Sil", default=False, width="small"),
+                            "Tarih / Saat": st.column_config.TextColumn("Tarih / Saat", disabled=True, width="medium"),
+                            "Görüşme Notu": st.column_config.TextColumn("Görüşme Notu", width="large")
+                        },
+                        use_container_width=True, height=300
+                    )
+                    
+                    degisiklik_log_var = False
+                    for index, row in edited_log.iterrows():
+                        if row["Sil"] == True:
+                            degisiklik_log_var = True
+                            break
+                        
+                        orj_not = str(df_log[df_log["id"] == row["id"]].iloc[0]["Görüşme Notu"])
+                        yeni_not = str(row["Görüşme Notu"])
+                        if orj_not != yeni_not:
+                            degisiklik_log_var = True
+                            break
+                            
+                    btn_log_lbl = "🔴 Not Değişikliklerini Kaydet" if degisiklik_log_var else "🟢 Geçmiş Güncel"
+                    btn_log_type = "primary" if degisiklik_log_var else "secondary"
+                    
+                    if st.button(btn_log_lbl, type=btn_log_type, disabled=not degisiklik_log_var, key=f"btn_log_{aktif_cari_kod}", use_container_width=True):
+                        c = conn.cursor()
+                        for index, row in edited_log.iterrows():
+                            log_id = row["id"]
+                            if row["Sil"] == True:
+                                c.execute("DELETE FROM loglar WHERE id=%s", (log_id,))
+                            else:
+                                orj_not = str(df_log[df_log["id"] == log_id].iloc[0]["Görüşme Notu"])
+                                yeni_not = str(row["Görüşme Notu"])
+                                if orj_not != yeni_not:
+                                    c.execute("UPDATE loglar SET not_metni=%s WHERE id=%s", (yeni_not, log_id))
+                        conn.commit()
+                        c.close()
+                        st.success("✅ Görüşme notları başarıyla güncellendi/silindi!")
+                        time.sleep(1)
+                        st.rerun()
+                else: 
+                    st.write("Bu cari için henüz bir görüşme notu veya durum değişikliği bulunmuyor.")
     else:
         st.info("Takip listeniz şu an boş. Ana ekrandan cari aktarabilirsiniz.")
     conn.close()
@@ -501,13 +597,11 @@ with tab4:
         df_gorev.rename(columns={"gorev_adi": "Görev Adı", "tarih": "Tarih", "durum": "Durum", "notlar": "Notlar"}, inplace=True)
         df_gorev["Tarih"] = pd.to_datetime(df_gorev["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
-        st.info("💡 **Hızlı Düzenleme:** Tabloda değişiklik yaptığınızda Kaydet butonu aktif (Kırmızı) olacaktır.")
-        
         edited_gorev = st.data_editor(
             df_gorev, hide_index=True,
             column_config={
                 "id": None, 
-                "Seç": st.column_config.CheckboxColumn("Silmek İçin Seç", default=False),
+                "Seç": st.column_config.CheckboxColumn("Seç", default=False),
                 "Durum": st.column_config.SelectboxColumn("Durum", options=["Bekliyor", "Devam Ediyor", "Tamamlandı", "İptal"]),
                 "Tarih": st.column_config.DateColumn("Tarih", format="DD.MM.YYYY")
             },
@@ -517,7 +611,6 @@ with tab4:
         
         silinecek_gorevler = edited_gorev[edited_gorev["Seç"] == True]
         
-        # --- YENİ: DEĞİŞİKLİK KONTROL MOTORU (GÖREVLER) ---
         degisiklik_gorev_var = False
         for index, row in edited_gorev.iterrows():
             g_id = row["id"]
@@ -532,7 +625,7 @@ with tab4:
         
         col_gbtn1, col_gbtn2 = st.columns(2)
         with col_gbtn1:
-            g_lbl = "🔴 Görevlerde Değişiklik Var! Tıkla ve Kaydet" if degisiklik_gorev_var else "🟢 Tüm Görevler Güncel (Değişiklik Yok)"
+            g_lbl = "🔴 Görevlerde Değişiklik Var! Tıkla ve Kaydet" if degisiklik_gorev_var else "🟢 Tüm Görevler Güncel"
             g_type = "primary" if degisiklik_gorev_var else "secondary"
             kaydet_g_basildi = st.button(g_lbl, type=g_type, disabled=not degisiklik_gorev_var, use_container_width=True, key="btn_gorev_kaydet")
             
@@ -568,6 +661,26 @@ with tab4:
                 st.rerun()
             else:
                 st.warning("Lütfen silmek için tablodan bir görev seçin.")
+                
+        if len(silinecek_gorevler) == 1:
+            st.markdown("---")
+            secili_g_id = silinecek_gorevler.iloc[0]["id"]
+            secili_g_adi = str(silinecek_gorevler.iloc[0]["Görev Adı"])
+            secili_g_not = str(silinecek_gorevler.iloc[0]["Notlar"])
+            
+            st.info(f"📌 **{secili_g_adi}** görevini takvime ekleyebilirsiniz.")
+            g_hedef_tarih = st.date_input("Görev Takvim Tarihi", format="DD.MM.YYYY", key=f"g_date_{secili_g_id}")
+            
+            if g_hedef_tarih:
+                g_ics_data = create_ics_file(f"✅ Görev: {secili_g_adi}", secili_g_not, g_hedef_tarih.strftime("%d.%m.%Y"))
+                if g_ics_data:
+                    st.download_button(
+                        label="🗓️ Bu Görevi iPhone Takvimine Ekle",
+                        data=g_ics_data,
+                        file_name=f"Gorev_{secili_g_id}.ics",
+                        mime="text/calendar",
+                        use_container_width=True
+                    )
     else:
         st.info("Harika! Bekleyen veya tamamlanmış hiçbir göreviniz yok.")
     conn.close()
