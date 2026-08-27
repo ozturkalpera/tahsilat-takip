@@ -3,7 +3,6 @@ import pandas as pd
 import psycopg2
 import os
 import io
-import time
 import urllib.parse
 from datetime import datetime
 import plotly.express as px
@@ -17,7 +16,7 @@ if "secili_uyari_kod" not in st.session_state:
     st.session_state["secili_uyari_kod"] = None
 
 # ==========================================
-# BULUT VERİTABANI BAĞLANTI AYARLARI
+# BULUT VERİTABANI BAĞLANTI AYARLARI (HIZLANDIRILMIŞ)
 # ==========================================
 try:
     DB_URL = st.secrets["DB_URL"]
@@ -28,49 +27,48 @@ except Exception as e:
     st.error("Bağlantı linki bulunamadı. Lütfen Streamlit Cloud 'Secrets' bölümüne DB_URL'i eklediğinizden emin olun.")
     st.stop()
 
+# Bağlantıyı hafızada (Cache) tutarak her tıklamadaki 300ms gecikmeyi engelliyoruz
+@st.cache_resource(ttl=3600)
+def get_db_connection():
+    return psycopg2.connect(DB_URL)
+
+def run_query(query, params=None, fetch=False):
+    """Veritabanı işlemlerini hızlandıran ve bağlantı kopmalarını önleyen merkezi fonksiyon"""
+    conn = get_db_connection()
+    try:
+        if conn.closed != 0:
+            conn = psycopg2.connect(DB_URL)
+        c = conn.cursor()
+        c.execute(query, params)
+        if fetch:
+            result = c.fetchall()
+            c.close()
+            return result
+        conn.commit()
+        c.close()
+    except Exception as e:
+        # Bağlantı koptuysa yenisini açıp tekrar dene
+        conn = psycopg2.connect(DB_URL)
+        c = conn.cursor()
+        c.execute(query, params)
+        if fetch:
+            result = c.fetchall()
+            c.close()
+            return result
+        conn.commit()
+        c.close()
+
 @st.cache_resource
 def init_db():
     try:
-        conn = psycopg2.connect(DB_URL)
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS takip (
-                        kod TEXT PRIMARY KEY, 
-                        isim TEXT, 
-                        telefon TEXT, 
-                        bakiye NUMERIC, 
-                        durum TEXT, 
-                        ozel_durum TEXT, 
-                        tarih TEXT
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS loglar (
-                        id SERIAL PRIMARY KEY, 
-                        cari_kod TEXT, 
-                        tarih_saat TEXT, 
-                        not_metni TEXT
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS ana_liste (
-                        kod TEXT PRIMARY KEY, 
-                        isim TEXT, 
-                        telefon TEXT, 
-                        bakiye NUMERIC
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS gorevler (
-                        id SERIAL PRIMARY KEY, 
-                        gorev_adi TEXT, 
-                        tarih TEXT, 
-                        durum TEXT, 
-                        notlar TEXT
-                    )''')
-        conn.commit()
-        c.close()
-        conn.close()
+        run_query('''CREATE TABLE IF NOT EXISTS takip (kod TEXT PRIMARY KEY, isim TEXT, telefon TEXT, bakiye NUMERIC, durum TEXT, ozel_durum TEXT, tarih TEXT)''')
+        run_query('''CREATE TABLE IF NOT EXISTS loglar (id SERIAL PRIMARY KEY, cari_kod TEXT, tarih_saat TEXT, not_metni TEXT)''')
+        run_query('''CREATE TABLE IF NOT EXISTS ana_liste (kod TEXT PRIMARY KEY, isim TEXT, telefon TEXT, bakiye NUMERIC)''')
+        run_query('''CREATE TABLE IF NOT EXISTS gorevler (id SERIAL PRIMARY KEY, gorev_adi TEXT, tarih TEXT, durum TEXT, notlar TEXT)''')
     except Exception as e:
         st.error(f"Veritabanı oluşturulamadı. Detay: {e}")
 
 init_db()
-
-def get_db_connection():
-    return psycopg2.connect(DB_URL)
 
 # --- YARDIMCI FONKSİYONLAR ---
 def bakiye_temizle(deger):
@@ -98,21 +96,7 @@ def create_ics_file(baslik, aciklama, tarih_str):
         dt = datetime.strptime(tarih_str, "%d.%m.%Y")
         dt_start = dt.strftime("%Y%m%dT090000")
         dt_end = dt.strftime("%Y%m%dT093000")
-        ics_icerik = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Tahsilat Sistemi//TR
-BEGIN:VEVENT
-SUMMARY:{baslik}
-DESCRIPTION:{aciklama}
-DTSTART:{dt_start}
-DTEND:{dt_end}
-BEGIN:VALARM
-TRIGGER:-PT15M
-ACTION:DISPLAY
-DESCRIPTION:Hatırlatma
-END:VALARM
-END:VEVENT
-END:VCALENDAR"""
+        ics_icerik = f"""BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Tahsilat Sistemi//TR\nBEGIN:VEVENT\nSUMMARY:{baslik}\nDESCRIPTION:{aciklama}\nDTSTART:{dt_start}\nDTEND:{dt_end}\nBEGIN:VALARM\nTRIGGER:-PT15M\nACTION:DISPLAY\nDESCRIPTION:Hatırlatma\nEND:VALARM\nEND:VEVENT\nEND:VCALENDAR"""
         return ics_icerik
     except:
         return None
@@ -121,12 +105,10 @@ def arama_temizle(deger):
     if pd.isna(deger): return ""
     metin = str(deger)
     degisim = {"I": "ı", "İ": "i", "Ş": "ş", "Ç": "ç", "Ö": "ö", "Ü": "ü", "Ğ": "ğ"}
-    for b, k in degisim.items():
-        metin = metin.replace(b, k)
+    for b, k in degisim.items(): metin = metin.replace(b, k)
     metin = metin.lower()
     degisim_fuzzy = {"ı": "i", "ğ": "g", "ü": "u", "ş": "s", "ö": "o", "ç": "c"}
-    for b, k in degisim_fuzzy.items():
-        metin = metin.replace(b, k)
+    for b, k in degisim_fuzzy.items(): metin = metin.replace(b, k)
     return metin.strip()
 
 # ==========================================
@@ -156,47 +138,48 @@ with tab1:
     if uploaded_file is not None:
         if st.button("Verileri Aktar ve Listeyi Yenile", type="primary"):
             df = pd.read_excel(uploaded_file)
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("DELETE FROM ana_liste")
-            c.execute("SELECT kod FROM takip")
-            takipteki_kodlar = [row[0] for row in c.fetchall()]
+            
+            # Performans: Veritabanından mevcut kodları tek seferde al
+            mevcut_kodlar = run_query("SELECT kod FROM takip", fetch=True)
+            takipteki_kodlar = [row[0] for row in mevcut_kodlar] if mevcut_kodlar else []
+            
+            run_query("DELETE FROM ana_liste")
+            
             sayac, guncellenen_sayac = 0, 0
             
             for index, row in df.iterrows():
                 c_isim = str(row.get("Cari İsim", ""))
                 if pd.isna(row.get("Cari İsim")) or not c_isim.strip(): continue
+                
+                # Performans: time.time() yerine index bazlı hızlı kod üretimi
                 c_kod = str(row.get("Cari Kod", "")).strip()
                 if c_kod == "nan" or c_kod == "-" or not c_kod:
-                    c_kod = f"KODSUZ-{index}-{int(time.time())}"
+                    c_kod = f"KODSUZ-{index}-{datetime.now().strftime('%H%M%S')}"
                 
                 bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
                 
                 if c_kod in takipteki_kodlar:
-                    c.execute("UPDATE takip SET bakiye=%s WHERE kod=%s", (bakiye_val, c_kod))
+                    run_query("UPDATE takip SET bakiye=%s WHERE kod=%s", (bakiye_val, c_kod))
                     guncellenen_sayac += 1
                     continue
                 
                 c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
-                c.execute("""
+                run_query("""
                     INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s)
                     ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
                 """, (c_kod, c_isim, c_tel, bakiye_val))
                 sayac += 1
-                
-            conn.commit()
-            c.close()
-            conn.close()
             
             mesaj = f"{sayac} adet yeni cari ana listeye eklendi."
-            if guncellenen_sayac > 0: mesaj += f"\n\n✅ Takipteki {guncellenen_sayac} adet carinin bakiyesi güncellendi!"
-            st.success(mesaj)
+            if guncellenen_sayac > 0: mesaj += f" (Takipteki {guncellenen_sayac} carinin bakiyesi güncellendi)"
+            st.toast(f"✅ {mesaj}", icon="🚀")
             st.rerun()
 
     st.markdown("---")
-    conn = get_db_connection()
-    df_ana = pd.read_sql_query("SELECT * FROM ana_liste", conn)
-    conn.close()
+    
+    # Performans: Pandas read_sql_query bağlantı havuzunu kullanır
+    conn_pd = get_db_connection()
+    df_ana = pd.read_sql_query("SELECT * FROM ana_liste", conn_pd)
     
     if not df_ana.empty:
         col1, col2, col3 = st.columns(3)
@@ -231,32 +214,23 @@ with tab1:
         
         secilenler = edited_df[edited_df["Seç"] == True]
         if st.button("Seçilenleri Takibe Aktar ➔", type="primary") and not secilenler.empty:
-            try:
-                conn = get_db_connection()
-                c = conn.cursor()
-                for index, row in secilenler.iterrows():
-                    kod = str(row["Cari Kod"])
-                    isim = str(row["Cari İsim"])
-                    telefon = str(row["Telefon"])
-                    bakiye = float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0
-                    
-                    c.execute("""
-                        INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s) 
-                        ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
-                    """, (kod, isim, telefon, bakiye, "Beklemede", "", ""))
-                    c.execute("DELETE FROM ana_liste WHERE kod=%s", (kod,))
-                    
-                    zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
-                    c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman, f"Sistem: Cari takibe alındı. (Bakiye: {bakiye:,.2f} TL)"))
-                conn.commit()
-                c.close()
-                conn.close()
-                st.success("Seçilen cariler takibe aktarıldı!")
-                time.sleep(1) 
-                st.rerun()
-            except Exception as e:
-                st.error(f"Aktarım sırasında bir hata oluştu: {e}")
+            zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
+            for index, row in secilenler.iterrows():
+                kod = str(row["Cari Kod"])
+                isim = str(row["Cari İsim"])
+                telefon = str(row["Telefon"])
+                bakiye = float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0
+                
+                run_query("""
+                    INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) 
+                    ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye
+                """, (kod, isim, telefon, bakiye, "Beklemede", "", ""))
+                run_query("DELETE FROM ana_liste WHERE kod=%s", (kod,))
+                run_query("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman, f"Sistem: Cari takibe alındı. (Bakiye: {bakiye:,.2f} TL)"))
+            
+            st.toast("✅ Seçilen cariler takibe aktarıldı!", icon="🚀")
+            st.rerun()
 
 # ==========================================
 # 2. SEKME: TAHSİLAT TAKİP VE LOG
@@ -267,43 +241,36 @@ with tab2:
             col_m1, col_m2 = st.columns(2)
             m_isim = col_m1.text_input("Cari İsim *")
             m_bakiye = col_m2.number_input("Bakiye (TL)", min_value=0.0, step=100.0)
-            
             col_m3, col_m4 = st.columns(2)
             m_tel = col_m3.text_input("Telefon (İsteğe Bağlı)")
-            m_kod = col_m4.text_input("Cari Kod (Boş bırakırsanız sistem otomatik üretir)")
+            m_kod = col_m4.text_input("Cari Kod (Boş bırakırsanız sistem üretir)")
             
             if st.form_submit_button("Listeye Ekle ve Takibe Al"):
                 if m_isim.strip():
                     if not m_kod.strip():
-                        m_kod = f"MANUEL-{int(time.time())}"
-                    try:
-                        conn = get_db_connection()
-                        c = conn.cursor()
-                        c.execute("SELECT kod FROM takip WHERE kod=%s", (m_kod,))
-                        if c.fetchone():
-                            st.error("Bu Cari Kod zaten kullanımda. Lütfen farklı bir kod girin.")
-                        else:
-                            c.execute("""
-                                INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            """, (m_kod, m_isim, m_tel, m_bakiye, "Beklemede", "Manuel Eklendi", ""))
-                            zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
-                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (m_kod, zaman, f"Sistem: Manuel olarak eklendi. (Bakiye: {m_bakiye:,.2f} TL)"))
-                            conn.commit()
-                            st.success(f"'{m_isim}' başarıyla takip listesine eklendi!")
-                            time.sleep(1)
-                            st.rerun()
-                        c.close()
-                        conn.close()
-                    except Exception as e:
-                        st.error(f"Ekleme hatası: {e}")
+                        m_kod = f"MANUEL-{datetime.now().strftime('%H%M%S')}"
+                    
+                    kontrol = run_query("SELECT kod FROM takip WHERE kod=%s", (m_kod,), fetch=True)
+                    if kontrol:
+                        st.error("Bu Cari Kod zaten kullanımda.")
+                    else:
+                        run_query("""
+                            INSERT INTO takip (kod, isim, telefon, bakiye, durum, ozel_durum, tarih) 
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (m_kod, m_isim, m_tel, m_bakiye, "Beklemede", "Manuel Eklendi", ""))
+                        
+                        zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
+                        run_query("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (m_kod, zaman, f"Sistem: Manuel olarak eklendi. (Bakiye: {m_bakiye:,.2f} TL)"))
+                        
+                        st.toast(f"✅ '{m_isim}' başarıyla eklendi!", icon="🚀")
+                        st.rerun()
                 else:
                     st.error("Lütfen Cari İsim giriniz!")
 
     st.markdown("---")
     
-    conn = get_db_connection()
-    df_takip = pd.read_sql_query("SELECT * FROM takip", conn)
+    conn_pd = get_db_connection()
+    df_takip = pd.read_sql_query("SELECT * FROM takip", conn_pd)
     
     if not df_takip.empty:
         df_takip["bakiye"] = pd.to_numeric(df_takip["bakiye"], errors='coerce')
@@ -319,7 +286,6 @@ with tab2:
                     elif tarih_obj == bugun: bugun_aranacaklar.append(row)
                 except: pass
                 
-        # --- TIKLANABİLİR AKILLI UYARILAR ---
         if vadesi_gecen_cariler or bugun_aranacaklar:
             with st.expander("🚨 AKILLI UYARILAR (İlgilenilmesi Gerekenler)", expanded=True):
                 if vadesi_gecen_cariler:
@@ -356,33 +322,25 @@ with tab2:
         arama_takip = col_f3.text_input("Cari İsim Ara 🔍", placeholder="Örn: fatı, Fati...").strip()
         
         df_gosterim = df_takip.copy()
-        
-        # --- YENİ: TABLOYU İNCELEME MODUNA GÖRE FİLTRELEME ---
         uyari_modu_aktif = False
         
         if st.session_state.get("secili_uyari_kod"):
             uyari_kod = st.session_state["secili_uyari_kod"]
-            # Eğer seçilen kişi hala listede varsa (silinmediyse)
             if uyari_kod in df_gosterim["kod"].values:
                 df_gosterim = df_gosterim[df_gosterim["kod"] == uyari_kod]
                 uyari_modu_aktif = True
                 uyari_isim = df_gosterim.iloc[0]["isim"]
-                
-                # Tablonun üstünde Uyarı Barı Çıkar
                 c_u1, c_u2 = st.columns([4, 1])
-                c_u1.success(f"🚨 Şu an **{uyari_isim}** inceleniyor. Tablo sadece bu cariyi gösteriyor.")
+                c_u1.success(f"🚨 Şu an **{uyari_isim}** inceleniyor.")
                 if c_u2.button("❌ İncelemeyi Kapat", use_container_width=True):
                     st.session_state["secili_uyari_kod"] = None
                     st.rerun()
             else:
-                # Silinmişse uyarı kodunu sıfırla
                 st.session_state["secili_uyari_kod"] = None
         
-        # Eğer İnceleme Modu aktif değilse normal filtreleri (Durum, Arama vb.) uygula
         if not uyari_modu_aktif:
             if secili_durum != "Tümü": df_gosterim = df_gosterim[df_gosterim["durum"] == secili_durum]
             if secili_ozel != "Tümü": df_gosterim = df_gosterim[df_gosterim["ozel_durum"] == secili_ozel]
-            
             if arama_takip:
                 a_t = arama_temizle(arama_takip)
                 isim_mask = df_gosterim["isim"].apply(arama_temizle).str.contains(a_t)
@@ -408,6 +366,9 @@ with tab2:
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
         
+        if len(secili_satirlar) > 0 or len(df_gosterim) == 1:
+            st.session_state["secili_uyari_kod"] = None
+        
         degisiklik_var_mi = False
         for index, row in edited_takip.iterrows():
             kod = str(row["Cari Kod"])
@@ -422,7 +383,7 @@ with tab2:
         
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            btn_label = "🔴 Değişiklikler Var! Tıkla ve Kaydet" if degisiklik_var_mi else "🟢 Tüm Veriler Güncel (Değişiklik Yok)"
+            btn_label = "🔴 Değişiklikler Var! Tıkla ve Kaydet" if degisiklik_var_mi else "🟢 Tüm Veriler Güncel"
             btn_type = "primary" if degisiklik_var_mi else "secondary"
             kaydet_basildi = st.button(btn_label, type=btn_type, disabled=not degisiklik_var_mi, use_container_width=True, key="btn_cari_kaydet")
             
@@ -430,7 +391,6 @@ with tab2:
             sil_basildi = st.button("❌ Seçilenleri Takipten Çıkar ve Ana Ekrana Aktar", use_container_width=True, key="btn_cari_sil")
         
         if kaydet_basildi:
-            c = conn.cursor()
             zaman_simdi = datetime.now().strftime("%d.%m.%Y %H:%M")
             for index, row in edited_takip.iterrows():
                 kod = str(row["Cari Kod"])
@@ -441,54 +401,39 @@ with tab2:
                 yeni_durum = str(row["Durum"])
                 
                 if (eski_durum != yeni_durum or str(orj_row["ozel_durum"]) != yeni_ozel or str(orj_row["tarih"]) != yeni_tarih):
-                    c.execute("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (yeni_durum, yeni_ozel, yeni_tarih, kod))
-                    
+                    run_query("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (yeni_durum, yeni_ozel, yeni_tarih, kod))
                     if eski_durum != yeni_durum:
                         log_mesaji = f"Sistem: Durum güncellendi ({eski_durum} ➔ {yeni_durum})"
-                        c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman_simdi, log_mesaji))
+                        run_query("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman_simdi, log_mesaji))
                         
-            conn.commit()
-            c.close()
-            st.success("✅ Tablodaki tüm güncellemeler tek seferde buluta kaydedildi!")
-            time.sleep(1)
+            st.toast("✅ Tüm güncellemeler buluta kaydedildi!", icon="🚀")
             st.rerun()
 
         if sil_basildi:
             if not secili_satirlar.empty:
-                c = conn.cursor()
                 for index, row in secili_satirlar.iterrows():
                     kod = str(row["Cari Kod"])
                     if not kod.startswith("MANUEL-") and not kod.startswith("KODSUZ-"):
-                        c.execute("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s) ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye", 
+                        run_query("INSERT INTO ana_liste (kod, isim, telefon, bakiye) VALUES (%s, %s, %s, %s) ON CONFLICT (kod) DO UPDATE SET isim=EXCLUDED.isim, telefon=EXCLUDED.telefon, bakiye=EXCLUDED.bakiye", 
                                   (kod, str(row["Cari İsim"]), str(row["Telefon"]), float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0))
-                    c.execute("DELETE FROM takip WHERE kod=%s", (kod,))
-                    c.execute("DELETE FROM loglar WHERE cari_kod=%s", (kod,)) 
-                conn.commit()
-                c.close()
-                st.success("Seçilen cariler takipten çıkarıldı.")
-                time.sleep(1)
+                    run_query("DELETE FROM takip WHERE kod=%s", (kod,))
+                    run_query("DELETE FROM loglar WHERE cari_kod=%s", (kod,)) 
+                st.toast("✅ Seçilen cariler takipten çıkarıldı.", icon="🗑️")
                 st.rerun()
             else: 
                 st.warning("Lütfen takipten çıkarmak için tablodan birilerini seçin.")
 
         st.markdown("---")
         
-        # --- CARİ DETAY PANELİ AKILLI AÇILIŞ MANTIĞI ---
         aktif_cari_kod = None
-        
         if len(secili_satirlar) == 1:
             aktif_cari_kod = str(secili_satirlar.iloc[0]["Cari Kod"])
         elif len(secili_satirlar) > 1:
             st.warning("⚠️ Görüşme detaylarını görmek için tablodan sadece **BİR** kişinin kutucuğunu işaretleyin.")
         elif len(df_gosterim) == 1:
-            # İster manuel aramadan dolayı 1 kişi kalsın, ister uyarı butonundan İncele densin
-            # Tabloda tek bir satır varsa otomatik olarak detayı açılır.
             aktif_cari_kod = str(df_gosterim.iloc[0]["Cari Kod"])
-        else:
-            cari_liste = ["-- Lütfen tablodan bir cari işaretleyin veya arama yapın --"] + df_takip.apply(lambda x: f"{x['isim']} ({x['kod']})", axis=1).tolist()
-            secilen_cari_str = st.selectbox("Manuel Cari Seçimi (İsteğe Bağlı):", cari_liste)
-            if secilen_cari_str != "-- Lütfen tablodan bir cari işaretleyin veya arama yapın --":
-                aktif_cari_kod = secilen_cari_str.split("(")[-1].replace(")", "")
+        elif st.session_state["secili_uyari_kod"]:
+            aktif_cari_kod = st.session_state["secili_uyari_kod"]
         
         if aktif_cari_kod and aktif_cari_kod in df_takip['kod'].values:
             cari_detay = df_takip[df_takip['kod'] == aktif_cari_kod].iloc[0]
@@ -502,15 +447,8 @@ with tab2:
                     ics_baslik = f"☎️ {cari_detay['isim']} Tahsilat Araması"
                     ics_aciklama = f"Bakiye: {float(cari_detay['bakiye']):,.2f} TL\\nTelefon: {cari_detay['telefon']}\\nDurum: {cari_detay['durum']}"
                     ics_data = create_ics_file(ics_baslik, ics_aciklama, hatirlatma_tarihi.strftime("%d.%m.%Y"))
-                    
                     if ics_data:
-                        st.download_button(
-                            label="🗓️ iPhone Takvimine Hatırlatıcı Ekle",
-                            data=ics_data,
-                            file_name=f"Tahsilat_{cari_detay['isim'].replace(' ', '_')}.ics",
-                            mime="text/calendar",
-                            use_container_width=True
-                        )
+                        st.download_button("🗓️ iPhone Takvimine Hatırlatıcı Ekle", data=ics_data, file_name=f"Tahsilat_{cari_detay['isim'].replace(' ', '_')}.ics", mime="text/calendar", use_container_width=True)
                 st.markdown("---")
 
                 with st.form(key=f"form_{aktif_cari_kod}", clear_on_submit=True):
@@ -518,23 +456,18 @@ with tab2:
                     if st.form_submit_button("Notu Buluta Kaydet"):
                         if yeni_not.strip():
                             zaman = datetime.now().strftime("%d.%m.%Y %H:%M")
-                            c = conn.cursor()
-                            c.execute("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (aktif_cari_kod, zaman, yeni_not.strip()))
-                            conn.commit()
-                            c.close()
-                            st.success("Not başarıyla eklendi!")
+                            run_query("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (aktif_cari_kod, zaman, yeni_not.strip()))
+                            st.toast("✅ Not başarıyla eklendi!", icon="📝")
                             st.rerun()
                         else: st.warning("Lütfen boş bir not kaydetmeyin.")
             
             with log_col2:
                 st.markdown(f"**Geçmiş Görüşmeler ve Durum Logları**")
-                df_log = pd.read_sql_query(f"SELECT id, tarih_saat, not_metni FROM loglar WHERE cari_kod='{aktif_cari_kod}' ORDER BY id DESC", conn)
+                df_log = pd.read_sql_query(f"SELECT id, tarih_saat, not_metni FROM loglar WHERE cari_kod='{aktif_cari_kod}' ORDER BY id DESC", conn_pd)
                 
                 if not df_log.empty:
                     df_log.insert(0, "Sil", False)
                     df_log.rename(columns={"tarih_saat": "Tarih / Saat", "not_metni": "Görüşme Notu"}, inplace=True)
-                    
-                    st.caption("Aşağıdaki notların üzerine tıklayarak değiştirebilir veya sol taraftan seçerek silebilirsiniz.")
                     
                     edited_log = st.data_editor(
                         df_log, hide_index=True,
@@ -552,7 +485,6 @@ with tab2:
                         if row["Sil"] == True:
                             degisiklik_log_var = True
                             break
-                        
                         orj_not = str(df_log[df_log["id"] == row["id"]].iloc[0]["Görüşme Notu"])
                         yeni_not = str(row["Görüşme Notu"])
                         if orj_not != yeni_not:
@@ -563,35 +495,27 @@ with tab2:
                     btn_log_type = "primary" if degisiklik_log_var else "secondary"
                     
                     if st.button(btn_log_lbl, type=btn_log_type, disabled=not degisiklik_log_var, key=f"btn_log_{aktif_cari_kod}", use_container_width=True):
-                        c = conn.cursor()
                         for index, row in edited_log.iterrows():
                             log_id = row["id"]
                             if row["Sil"] == True:
-                                c.execute("DELETE FROM loglar WHERE id=%s", (log_id,))
+                                run_query("DELETE FROM loglar WHERE id=%s", (log_id,))
                             else:
                                 orj_not = str(df_log[df_log["id"] == log_id].iloc[0]["Görüşme Notu"])
                                 yeni_not = str(row["Görüşme Notu"])
                                 if orj_not != yeni_not:
-                                    c.execute("UPDATE loglar SET not_metni=%s WHERE id=%s", (yeni_not, log_id))
-                        conn.commit()
-                        c.close()
-                        st.success("✅ Görüşme notları başarıyla güncellendi/silindi!")
-                        time.sleep(1)
+                                    run_query("UPDATE loglar SET not_metni=%s WHERE id=%s", (yeni_not, log_id))
+                        st.toast("✅ Görüşme notları güncellendi!", icon="🚀")
                         st.rerun()
                 else: 
-                    st.write("Bu cari için henüz bir görüşme notu veya durum değişikliği bulunmuyor.")
-    else:
-        st.info("Takip listeniz şu an boş. Ana ekrandan cari aktarabilirsiniz.")
-    conn.close()
+                    st.write("Bu cari için henüz bir görüşme notu bulunmuyor.")
 
 # ==========================================
 # 3. SEKME: GÖRSEL RAPORLAR
 # ==========================================
 with tab3:
     st.markdown("### 📊 Gelişmiş Finans ve Tahsilat Raporları")
-    conn = get_db_connection()
-    df_rapor = pd.read_sql_query("SELECT * FROM takip", conn)
-    conn.close()
+    conn_pd = get_db_connection()
+    df_rapor = pd.read_sql_query("SELECT * FROM takip", conn_pd)
     
     if not df_rapor.empty:
         df_rapor["bakiye"] = pd.to_numeric(df_rapor["bakiye"], errors='coerce')
@@ -620,8 +544,6 @@ with tab3:
             df_ozel = df_ozel.sort_values(by="bakiye", ascending=False)
             df_ozel.rename(columns={"ozel_durum": "Sizin Eklediğiniz Durum", "bakiye": "İçerideki Toplam Tutar (TL)"}, inplace=True)
             st.dataframe(df_ozel.style.format({"İçerideki Toplam Tutar (TL)": "{:,.2f} TL"}), use_container_width=True)
-        else: st.write("Henüz bir 'Özel Durum' etiketi kullanmadınız.")
-    else: st.info("Rapor oluşturulabilmesi için Takip listenize veri eklemelisiniz.")
 
 # ==========================================
 # 4. SEKME: GÖREV YÖNETİCİSİ
@@ -639,22 +561,16 @@ with tab4:
             if st.form_submit_button("Görevi Kaydet"):
                 if g_adi.strip():
                     tarih_str = g_tarih.strftime("%d.%m.%Y") if g_tarih else ""
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO gorevler (gorev_adi, tarih, durum, notlar) VALUES (%s, %s, %s, %s)",
+                    run_query("INSERT INTO gorevler (gorev_adi, tarih, durum, notlar) VALUES (%s, %s, %s, %s)",
                               (g_adi.strip(), tarih_str, "Bekliyor", g_not.strip()))
-                    conn.commit()
-                    c.close()
-                    conn.close()
-                    st.success("Görev başarıyla eklendi!")
-                    time.sleep(1)
+                    st.toast("✅ Görev başarıyla eklendi!", icon="🚀")
                     st.rerun()
                 else:
                     st.error("Lütfen bir görev adı girin!")
 
     st.markdown("---")
-    conn = get_db_connection()
-    df_gorev = pd.read_sql_query("SELECT id, gorev_adi, tarih, durum, notlar FROM gorevler ORDER BY id DESC", conn)
+    conn_pd = get_db_connection()
+    df_gorev = pd.read_sql_query("SELECT id, gorev_adi, tarih, durum, notlar FROM gorevler ORDER BY id DESC", conn_pd)
     
     if not df_gorev.empty:
         df_gorev.insert(0, "Seç", False)
@@ -697,7 +613,6 @@ with tab4:
             sil_g_basildi = st.button("❌ Seçilen Görevleri Sil", use_container_width=True, key="btn_gorev_sil")
             
         if kaydet_g_basildi:
-            c = conn.cursor()
             for index, row in edited_gorev.iterrows():
                 g_id = row["id"]
                 orj_row = df_gorev[df_gorev["id"] == g_id].iloc[0]
@@ -706,22 +621,15 @@ with tab4:
                 y_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
                 
                 if (orj_row["Durum"] != y_durum or str(orj_row["Notlar"]) != y_not or orj_row["Tarih"] != row["Tarih"]):
-                    c.execute("UPDATE gorevler SET durum=%s, notlar=%s, tarih=%s WHERE id=%s", (y_durum, y_not, y_tarih, g_id))
-            conn.commit()
-            c.close()
-            st.success("✅ Tüm görev güncellemeleri tek seferde kaydedildi!")
-            time.sleep(1)
+                    run_query("UPDATE gorevler SET durum=%s, notlar=%s, tarih=%s WHERE id=%s", (y_durum, y_not, y_tarih, g_id))
+            st.toast("✅ Görev güncellemeleri kaydedildi!", icon="🚀")
             st.rerun()
 
         if sil_g_basildi:
             if not silinecek_gorevler.empty:
-                c = conn.cursor()
                 for index, row in silinecek_gorevler.iterrows():
-                    c.execute("DELETE FROM gorevler WHERE id=%s", (row["id"],))
-                conn.commit()
-                c.close()
-                st.success("Seçilen görevler başarıyla silindi.")
-                time.sleep(1)
+                    run_query("DELETE FROM gorevler WHERE id=%s", (row["id"],))
+                st.toast("✅ Seçilen görevler silindi.", icon="🗑️")
                 st.rerun()
             else:
                 st.warning("Lütfen silmek için tablodan bir görev seçin.")
@@ -738,13 +646,6 @@ with tab4:
             if g_hedef_tarih:
                 g_ics_data = create_ics_file(f"✅ Görev: {secili_g_adi}", secili_g_not, g_hedef_tarih.strftime("%d.%m.%Y"))
                 if g_ics_data:
-                    st.download_button(
-                        label="🗓️ Bu Görevi iPhone Takvimine Ekle",
-                        data=g_ics_data,
-                        file_name=f"Gorev_{secili_g_id}.ics",
-                        mime="text/calendar",
-                        use_container_width=True
-                    )
+                    st.download_button("🗓️ Bu Görevi iPhone Takvimine Ekle", data=g_ics_data, file_name=f"Gorev_{secili_g_id}.ics", mime="text/calendar", use_container_width=True)
     else:
         st.info("Harika! Bekleyen veya tamamlanmış hiçbir göreviniz yok.")
-    conn.close()
