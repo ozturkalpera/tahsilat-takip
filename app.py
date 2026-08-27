@@ -27,13 +27,11 @@ except Exception as e:
     st.error("Bağlantı linki bulunamadı. Lütfen Streamlit Cloud 'Secrets' bölümüne DB_URL'i eklediğinizden emin olun.")
     st.stop()
 
-# Bağlantıyı hafızada (Cache) tutarak her tıklamadaki 300ms gecikmeyi engelliyoruz
 @st.cache_resource(ttl=3600)
 def get_db_connection():
     return psycopg2.connect(DB_URL)
 
 def run_query(query, params=None, fetch=False):
-    """Veritabanı işlemlerini hızlandıran ve bağlantı kopmalarını önleyen merkezi fonksiyon"""
     conn = get_db_connection()
     try:
         if conn.closed != 0:
@@ -47,7 +45,6 @@ def run_query(query, params=None, fetch=False):
         conn.commit()
         c.close()
     except Exception as e:
-        # Bağlantı koptuysa yenisini açıp tekrar dene
         conn = psycopg2.connect(DB_URL)
         c = conn.cursor()
         c.execute(query, params)
@@ -139,7 +136,6 @@ with tab1:
         if st.button("Verileri Aktar ve Listeyi Yenile", type="primary"):
             df = pd.read_excel(uploaded_file)
             
-            # Performans: Veritabanından mevcut kodları tek seferde al
             mevcut_kodlar = run_query("SELECT kod FROM takip", fetch=True)
             takipteki_kodlar = [row[0] for row in mevcut_kodlar] if mevcut_kodlar else []
             
@@ -151,7 +147,6 @@ with tab1:
                 c_isim = str(row.get("Cari İsim", ""))
                 if pd.isna(row.get("Cari İsim")) or not c_isim.strip(): continue
                 
-                # Performans: time.time() yerine index bazlı hızlı kod üretimi
                 c_kod = str(row.get("Cari Kod", "")).strip()
                 if c_kod == "nan" or c_kod == "-" or not c_kod:
                     c_kod = f"KODSUZ-{index}-{datetime.now().strftime('%H%M%S')}"
@@ -177,7 +172,6 @@ with tab1:
 
     st.markdown("---")
     
-    # Performans: Pandas read_sql_query bağlantı havuzunu kullanır
     conn_pd = get_db_connection()
     df_ana = pd.read_sql_query("SELECT * FROM ana_liste", conn_pd)
     
@@ -366,8 +360,7 @@ with tab2:
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
         
-        if len(secili_satirlar) > 0 or len(df_gosterim) == 1:
-            st.session_state["secili_uyari_kod"] = None
+        # --- HATAYI DÜZELTTİĞİM YER (SİLDİĞİMİZ KOD BURADAYDI) ---
         
         degisiklik_var_mi = False
         for index, row in edited_takip.iterrows():
@@ -383,7 +376,7 @@ with tab2:
         
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            btn_label = "🔴 Değişiklikler Var! Tıkla ve Kaydet" if degisiklik_var_mi else "🟢 Tüm Veriler Güncel"
+            btn_label = "🔴 Değişiklikler Var! Tıkla ve Kaydet" if degisiklik_var_mi else "🟢 Tüm Veriler Güncel (Değişiklik Yok)"
             btn_type = "primary" if degisiklik_var_mi else "secondary"
             kaydet_basildi = st.button(btn_label, type=btn_type, disabled=not degisiklik_var_mi, use_container_width=True, key="btn_cari_kaydet")
             
