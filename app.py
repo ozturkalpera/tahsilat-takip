@@ -136,7 +136,6 @@ with tab1:
         if st.button("Verileri Aktar ve Listeyi Yenile", type="primary"):
             df = pd.read_excel(uploaded_file)
             
-            # --- YENİ: EXCEL BİYOGRAFİ LOGLAMASI İÇİN BAKIYELER DE ÇEKİLİYOR ---
             mevcut_kodlar = run_query("SELECT kod, bakiye FROM takip", fetch=True)
             takip_dict = {row[0]: float(row[1]) if row[1] is not None else 0.0 for row in mevcut_kodlar} if mevcut_kodlar else {}
             
@@ -157,7 +156,6 @@ with tab1:
                 
                 if c_kod in takip_dict:
                     eski_bakiye = takip_dict[c_kod]
-                    # Eğer excel'deki yeni bakiye eski bakiyeden farklıysa güncelle ve log at
                     if abs(eski_bakiye - bakiye_val) > 0.01:
                         run_query("UPDATE takip SET bakiye=%s WHERE kod=%s", (bakiye_val, c_kod))
                         log_mesaji = f"Sistem: Excel'den bakiye güncellendi ({eski_bakiye:,.2f} TL ➔ {bakiye_val:,.2f} TL)"
@@ -352,7 +350,6 @@ with tab2:
         df_gosterim.insert(0, "Seç", False)
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
-        # --- YENİ: BAKİYE HÜCRESİ ARTIK MANUEL DÜZENLENEBİLİR ---
         st.info("💡 **Hızlı Düzenleme:** Tablodan durum, tarih ve **bakiye** değişikliğini hızlıca yapıp kaydedebilirsiniz.")
         
         edited_takip = st.data_editor(
@@ -364,15 +361,11 @@ with tab2:
                 "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f"),
                 "WhatsApp": st.column_config.LinkColumn("WhatsApp İletişim", display_text="💬 Mesaj Gönder")
             },
-            # Bakiye, disabled listesinden çıkartıldı
             disabled=["Cari Kod", "Cari İsim", "Telefon", "WhatsApp"],
             use_container_width=True, height=350
         )
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
-        
-        if len(secili_satirlar) > 0 or len(df_gosterim) == 1:
-            st.session_state["secili_uyari_kod"] = None
         
         degisiklik_var_mi = False
         for index, row in edited_takip.iterrows():
@@ -421,7 +414,6 @@ with tab2:
                 if (eski_durum != yeni_durum or eski_ozel != yeni_ozel or eski_tarih != yeni_tarih or abs(eski_bakiye - yeni_bakiye) > 0.01):
                     run_query("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s, bakiye=%s WHERE kod=%s", (yeni_durum, yeni_ozel, yeni_tarih, yeni_bakiye, kod))
                     
-                    # --- YENİ: LOGLARI AKILLICA BİRLEŞTİRME ---
                     log_parcalari = []
                     if eski_durum != yeni_durum:
                         log_parcalari.append(f"Durum ({eski_durum} ➔ {yeni_durum})")
@@ -572,8 +564,8 @@ with tab3:
         df_ozel = df_rapor[df_rapor["ozel_durum"] != ""].groupby("ozel_durum")["bakiye"].sum().reset_index()
         if not df_ozel.empty:
             df_ozel = df_ozel.sort_values(by="bakiye", ascending=False)
-            df_ozel.rename(columns={"ozel_durum": "Sizin Eklediğiniz Durum", "bakiye": "İçerideki Toplam Tutar (TL)"}, inplace=True)
-            st.dataframe(df_ozel.style.format({"İçerideki Toplam Tutar (TL)": "{:,.2f} TL"}), use_container_width=True)
+            df_ozel.rename(columns={"ozel_durum": "Sizin Eklediğiniz Durum", "bakiye": "İçeride Toplam Tutar (TL)"}, inplace=True)
+            st.dataframe(df_ozel.style.format({"İçeride Toplam Tutar (TL)": "{:,.2f} TL"}), use_container_width=True)
 
 # ==========================================
 # 4. SEKME: GÖREV YÖNETİCİSİ
