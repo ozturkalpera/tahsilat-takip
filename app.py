@@ -136,12 +136,14 @@ with tab1:
         if st.button("Verileri Aktar ve Listeyi Yenile", type="primary"):
             df = pd.read_excel(uploaded_file)
             
-            mevcut_kodlar = run_query("SELECT kod FROM takip", fetch=True)
-            takipteki_kodlar = [row[0] for row in mevcut_kodlar] if mevcut_kodlar else []
+            # --- YENİ: EXCEL BİYOGRAFİ LOGLAMASI İÇİN BAKIYELER DE ÇEKİLİYOR ---
+            mevcut_kodlar = run_query("SELECT kod, bakiye FROM takip", fetch=True)
+            takip_dict = {row[0]: float(row[1]) if row[1] is not None else 0.0 for row in mevcut_kodlar} if mevcut_kodlar else {}
             
             run_query("DELETE FROM ana_liste")
             
             sayac, guncellenen_sayac = 0, 0
+            zaman_simdi = datetime.now().strftime("%d.%m.%Y %H:%M")
             
             for index, row in df.iterrows():
                 c_isim = str(row.get("Cari İsim", ""))
@@ -153,9 +155,14 @@ with tab1:
                 
                 bakiye_val = bakiye_temizle(row.get("Borç Bak.", 0.0))
                 
-                if c_kod in takipteki_kodlar:
-                    run_query("UPDATE takip SET bakiye=%s WHERE kod=%s", (bakiye_val, c_kod))
-                    guncellenen_sayac += 1
+                if c_kod in takip_dict:
+                    eski_bakiye = takip_dict[c_kod]
+                    # Eğer excel'deki yeni bakiye eski bakiyeden farklıysa güncelle ve log at
+                    if abs(eski_bakiye - bakiye_val) > 0.01:
+                        run_query("UPDATE takip SET bakiye=%s WHERE kod=%s", (bakiye_val, c_kod))
+                        log_mesaji = f"Sistem: Excel'den bakiye güncellendi ({eski_bakiye:,.2f} TL ➔ {bakiye_val:,.2f} TL)"
+                        run_query("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (c_kod, zaman_simdi, log_mesaji))
+                        guncellenen_sayac += 1
                     continue
                 
                 c_tel = str(row.get("Telefon", "")) if pd.notna(row.get("Telefon")) else ""
@@ -345,6 +352,9 @@ with tab2:
         df_gosterim.insert(0, "Seç", False)
         df_gosterim["Tarih"] = pd.to_datetime(df_gosterim["Tarih"], format="%d.%m.%Y", errors="coerce").dt.date
         
+        # --- YENİ: BAKİYE HÜCRESİ ARTIK MANUEL DÜZENLENEBİLİR ---
+        st.info("💡 **Hızlı Düzenleme:** Tablodan durum, tarih ve **bakiye** değişikliğini hızlıca yapıp kaydedebilirsiniz.")
+        
         edited_takip = st.data_editor(
             df_gosterim, hide_index=True,
             column_config={
@@ -354,23 +364,32 @@ with tab2:
                 "Bakiye": st.column_config.NumberColumn("Bakiye (TL)", format="%.2f"),
                 "WhatsApp": st.column_config.LinkColumn("WhatsApp İletişim", display_text="💬 Mesaj Gönder")
             },
-            disabled=["Cari Kod", "Cari İsim", "Telefon", "Bakiye", "WhatsApp"],
+            # Bakiye, disabled listesinden çıkartıldı
+            disabled=["Cari Kod", "Cari İsim", "Telefon", "WhatsApp"],
             use_container_width=True, height=350
         )
         
         secili_satirlar = edited_takip[edited_takip["Seç"] == True]
         
-        # --- HATAYI DÜZELTTİĞİM YER (SİLDİĞİMİZ KOD BURADAYDI) ---
+        if len(secili_satirlar) > 0 or len(df_gosterim) == 1:
+            st.session_state["secili_uyari_kod"] = None
         
         degisiklik_var_mi = False
         for index, row in edited_takip.iterrows():
             kod = str(row["Cari Kod"])
             orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
+            
             yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
             yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
             yeni_durum = str(row["Durum"])
+            yeni_bakiye = float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0
             
-            if (str(orj_row["durum"]) != yeni_durum or str(orj_row["ozel_durum"]) != yeni_ozel or str(orj_row["tarih"]) != yeni_tarih):
+            eski_tarih = str(orj_row["tarih"]) if pd.notna(orj_row["tarih"]) and str(orj_row["tarih"]) not in ["nan", "None"] else ""
+            eski_ozel = str(orj_row["ozel_durum"]) if pd.notna(orj_row["ozel_durum"]) and str(orj_row["ozel_durum"]) not in ["nan", "None"] else ""
+            eski_durum = str(orj_row["durum"])
+            eski_bakiye = float(orj_row["bakiye"]) if pd.notna(orj_row["bakiye"]) else 0.0
+            
+            if (eski_durum != yeni_durum or eski_ozel != yeni_ozel or eski_tarih != yeni_tarih or abs(eski_bakiye - yeni_bakiye) > 0.01):
                 degisiklik_var_mi = True
                 break
         
@@ -388,15 +407,33 @@ with tab2:
             for index, row in edited_takip.iterrows():
                 kod = str(row["Cari Kod"])
                 orj_row = df_takip[df_takip["kod"] == kod].iloc[0]
+                
                 yeni_tarih = row["Tarih"].strftime("%d.%m.%Y") if pd.notna(row["Tarih"]) else ""
                 yeni_ozel = str(row["Özel Durum"]) if pd.notna(row["Özel Durum"]) else ""
-                eski_durum = str(orj_row["durum"])
                 yeni_durum = str(row["Durum"])
+                yeni_bakiye = float(row["Bakiye"]) if pd.notna(row["Bakiye"]) else 0.0
                 
-                if (eski_durum != yeni_durum or str(orj_row["ozel_durum"]) != yeni_ozel or str(orj_row["tarih"]) != yeni_tarih):
-                    run_query("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s WHERE kod=%s", (yeni_durum, yeni_ozel, yeni_tarih, kod))
+                eski_tarih = str(orj_row["tarih"]) if pd.notna(orj_row["tarih"]) and str(orj_row["tarih"]) not in ["nan", "None"] else ""
+                eski_ozel = str(orj_row["ozel_durum"]) if pd.notna(orj_row["ozel_durum"]) and str(orj_row["ozel_durum"]) not in ["nan", "None"] else ""
+                eski_durum = str(orj_row["durum"])
+                eski_bakiye = float(orj_row["bakiye"]) if pd.notna(orj_row["bakiye"]) else 0.0
+                
+                if (eski_durum != yeni_durum or eski_ozel != yeni_ozel or eski_tarih != yeni_tarih or abs(eski_bakiye - yeni_bakiye) > 0.01):
+                    run_query("UPDATE takip SET durum=%s, ozel_durum=%s, tarih=%s, bakiye=%s WHERE kod=%s", (yeni_durum, yeni_ozel, yeni_tarih, yeni_bakiye, kod))
+                    
+                    # --- YENİ: LOGLARI AKILLICA BİRLEŞTİRME ---
+                    log_parcalari = []
                     if eski_durum != yeni_durum:
-                        log_mesaji = f"Sistem: Durum güncellendi ({eski_durum} ➔ {yeni_durum})"
+                        log_parcalari.append(f"Durum ({eski_durum} ➔ {yeni_durum})")
+                    if eski_tarih != yeni_tarih:
+                        e_t = eski_tarih if eski_tarih else "Belirtilmemiş"
+                        y_t = yeni_tarih if yeni_tarih else "Kaldırıldı"
+                        log_parcalari.append(f"Tarih ({e_t} ➔ {y_t})")
+                    if abs(eski_bakiye - yeni_bakiye) > 0.01:
+                        log_parcalari.append(f"Bakiye ({eski_bakiye:,.2f} TL ➔ {yeni_bakiye:,.2f} TL)")
+                        
+                    if log_parcalari:
+                        log_mesaji = "Sistem: " + " ve ".join(log_parcalari) + " güncellendi."
                         run_query("INSERT INTO loglar (cari_kod, tarih_saat, not_metni) VALUES (%s, %s, %s)", (kod, zaman_simdi, log_mesaji))
                         
             st.toast("✅ Tüm güncellemeler buluta kaydedildi!", icon="🚀")
